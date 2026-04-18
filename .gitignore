@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Project specific
+.karaoke_cache.json
+.audio_cache/
+
+# OS
+.DS_Store
+Thumbs.db
