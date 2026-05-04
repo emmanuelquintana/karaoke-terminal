@@ -29,6 +29,57 @@ LRC_TIMESTAMP_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]")
 CACHE_FILE = os.path.join(os.path.dirname(__file__), ".karaoke_cache.json")
 AUDIO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".audio_cache")
 ELLIPSIS = "…"
+ASCII_FIGLET_FONT = "standard"
+ASCII_REVEAL_PORTION = 0.4
+ASCII_ART_HEIGHT = 5
+ASCII_FONT: dict[str, tuple[str, ...]] = {
+    "A": (" ### ", "#   #", "#####", "#   #", "#   #"),
+    "B": ("#### ", "#   #", "#### ", "#   #", "#### "),
+    "C": (" ####", "#    ", "#    ", "#    ", " ####"),
+    "D": ("#### ", "#   #", "#   #", "#   #", "#### "),
+    "E": ("#####", "#    ", "#### ", "#    ", "#####"),
+    "F": ("#####", "#    ", "#### ", "#    ", "#    "),
+    "G": (" ####", "#    ", "#  ##", "#   #", " ####"),
+    "H": ("#   #", "#   #", "#####", "#   #", "#   #"),
+    "I": ("#####", "  #  ", "  #  ", "  #  ", "#####"),
+    "J": ("#####", "   # ", "   # ", "#  # ", " ##  "),
+    "K": ("#   #", "#  # ", "###  ", "#  # ", "#   #"),
+    "L": ("#    ", "#    ", "#    ", "#    ", "#####"),
+    "M": ("#   #", "## ##", "# # #", "#   #", "#   #"),
+    "N": ("#   #", "##  #", "# # #", "#  ##", "#   #"),
+    "O": (" ### ", "#   #", "#   #", "#   #", " ### "),
+    "P": ("#### ", "#   #", "#### ", "#    ", "#    "),
+    "Q": (" ### ", "#   #", "# # #", "#  ##", " ####"),
+    "R": ("#### ", "#   #", "#### ", "#  # ", "#   #"),
+    "S": (" ####", "#    ", " ### ", "    #", "#### "),
+    "T": ("#####", "  #  ", "  #  ", "  #  ", "  #  "),
+    "U": ("#   #", "#   #", "#   #", "#   #", " ### "),
+    "V": ("#   #", "#   #", "#   #", " # # ", "  #  "),
+    "W": ("#   #", "#   #", "# # #", "## ##", "#   #"),
+    "X": ("#   #", " # # ", "  #  ", " # # ", "#   #"),
+    "Y": ("#   #", " # # ", "  #  ", "  #  ", "  #  "),
+    "Z": ("#####", "   # ", "  #  ", " #   ", "#####"),
+    "0": (" ### ", "#  ##", "# # #", "##  #", " ### "),
+    "1": ("  #  ", " ##  ", "  #  ", "  #  ", "#####"),
+    "2": (" ### ", "#   #", "   # ", "  #  ", "#####"),
+    "3": ("#### ", "    #", " ### ", "    #", "#### "),
+    "4": ("#   #", "#   #", "#####", "    #", "    #"),
+    "5": ("#####", "#    ", "#### ", "    #", "#### "),
+    "6": (" ####", "#    ", "#### ", "#   #", " ### "),
+    "7": ("#####", "   # ", "  #  ", " #   ", "#    "),
+    "8": (" ### ", "#   #", " ### ", "#   #", " ### "),
+    "9": (" ### ", "#   #", " ####", "    #", "#### "),
+    " ": ("   ", "   ", "   ", "   ", "   "),
+    "!": ("  #  ", "  #  ", "  #  ", "     ", "  #  "),
+    "?": (" ### ", "#   #", "   # ", "     ", "  #  "),
+    ".": ("     ", "     ", "     ", "     ", "  #  "),
+    ",": ("     ", "     ", "     ", "  #  ", " #   "),
+    "'": ("  #  ", "  #  ", "     ", "     ", "     "),
+    "-": ("     ", "     ", "#####", "     ", "     "),
+    "/": ("    #", "   # ", "  #  ", " #   ", "#    "),
+    "&": (" ##  ", "#  # ", " ##  ", "#  # ", " ## #"),
+}
+ASCII_FALLBACK_GLYPH = (" ### ", "#   #", "   # ", "     ", "  #  ")
 EMOJI_RULES = [
     ({"amor", "love", "heart", "corazon", "kiss", "beso"}, ["❤️", "💘", "🥰"]),
     ({"baila", "dance", "dancing", "party", "fiesta", "club"}, ["💃", "🕺", "🎉"]),
@@ -51,6 +102,11 @@ try:
     import imageio_ffmpeg
 except ImportError:  # pragma: no cover
     imageio_ffmpeg = None
+
+try:
+    import pyfiglet
+except ImportError:  # pragma: no cover
+    pyfiglet = None
 
 try:
     import pygame
@@ -171,6 +227,73 @@ def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
     without_marks = "".join(char for char in normalized if not unicodedata.combining(char))
     return without_marks.casefold()
+
+
+def ascii_safe_text(value: str) -> str:
+    replacements = {
+        "¿": "",
+        "¡": "",
+        "…": "...",
+        "–": "-",
+        "—": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+    }
+    normalized = unicodedata.normalize("NFKD", value)
+    without_marks = "".join(char for char in normalized if not unicodedata.combining(char))
+    cleaned = "".join(replacements.get(char, char) for char in without_marks)
+    ascii_only = "".join(char if 32 <= ord(char) <= 126 else " " for char in cleaned)
+    return re.sub(r"\s+", " ", ascii_only).strip() or "*"
+
+
+def ascii_glyph(char: str) -> tuple[str, ...]:
+    replacements = {"¿": "?", "¡": "!", "…": ".", "–": "-", "—": "-"}
+    normalized = replacements.get(char, normalize_text(char).upper())
+    if not normalized or normalized.isspace():
+        return ASCII_FONT[" "]
+    return ASCII_FONT.get(normalized[0], ASCII_FALLBACK_GLYPH)
+
+
+def pad_ascii_rows(rows: list[str]) -> list[str]:
+    max_width = max((len(row) for row in rows), default=0)
+    return [row.ljust(max_width) for row in rows]
+
+
+def build_ascii_block(text: str, width: Optional[int] = None) -> list[str]:
+    safe_text = ascii_safe_text(text)
+    if pyfiglet is not None:
+        try:
+            rendered = pyfiglet.figlet_format(
+                safe_text,
+                font=ASCII_FIGLET_FONT,
+                width=max(24, width or 80),
+            )
+            return pad_ascii_rows([row.rstrip() for row in rendered.rstrip("\n").splitlines()])
+        except Exception:  # pragma: no cover
+            pass
+
+    rows = [""] * ASCII_ART_HEIGHT
+    for char in safe_text:
+        glyph = ascii_glyph(char)
+        for row_index, row in enumerate(glyph):
+            rows[row_index] += row + " "
+    return pad_ascii_rows([row.rstrip() for row in rows])
+
+
+def reveal_ascii_block(rows: list[str], progress: float) -> list[str]:
+    progress = min(1.0, max(0.0, progress))
+    if progress == 0.0:
+        visible_rows = 0
+    elif progress >= 1.0:
+        visible_rows = len(rows)
+    else:
+        visible_rows = max(1, int(len(rows) * progress))
+    revealed_rows: list[str] = []
+    for row_index, row in enumerate(rows):
+        revealed_rows.append(row if row_index < visible_rows else " " * len(row))
+    return revealed_rows
 
 
 def slugify_filename(value: str) -> str:
@@ -418,6 +541,25 @@ def wrap_line(line: str, width: int) -> list[str]:
     return wrapped or [""]
 
 
+def ascii_art_lines(line: str, width: int, progress: float) -> list[str]:
+    if pyfiglet is not None:
+        return reveal_ascii_block(build_ascii_block(line, width), progress)
+
+    max_chars = max(1, min(22, max(1, width - 2) // 5))
+    chunks = textwrap.wrap(
+        ascii_safe_text(line),
+        width=max_chars,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )[:2]
+    art_lines: list[str] = []
+    for chunk_index, chunk in enumerate(chunks or ["*"]):
+        if chunk_index:
+            art_lines.append("")
+        art_lines.extend(reveal_ascii_block(build_ascii_block(chunk), progress))
+    return art_lines
+
+
 def progress_bar(progress: float, width: int = 24) -> str:
     progress = min(1.0, max(0.0, progress))
     filled = int(progress * width)
@@ -564,12 +706,15 @@ def build_frame_lines(
     elapsed: float,
     mode: str,
     next_timestamp: float,
+    ascii_lyrics: bool = False,
 ) -> tuple[int, list[str]]:
     width = shutil.get_terminal_size((96, 30)).columns
     frame_lines: list[str] = []
 
     title = f"{Style.BOLD}{Style.CYAN}🎧 {track.title} - {track.artist}{Style.RESET}"
     subtitle_bits = [f"Modo: {mode}", f"Tiempo: {format_seconds(elapsed)}"]
+    if ascii_lyrics:
+        subtitle_bits.append("Visual: ASCII")
     if track.album:
         subtitle_bits.append(f"Álbum: {track.album}")
     subtitle = f"{Style.GRAY}{'   |   '.join(subtitle_bits)}{Style.RESET}"
@@ -589,11 +734,23 @@ def build_frame_lines(
     if prev_line:
         frame_lines.append("")
 
-    emoji_pack = build_emoji_pack(current_line, index)
-    current_wrapped = wrap_line(current_line, width - 16)[:3]
-    for wrapped in current_wrapped:
-        highlighted = f"{Style.BOLD}{Style.YELLOW}{emoji_pack}  {wrapped}  {emoji_pack}{Style.RESET}"
-        frame_lines.append(center_text(fit_line(highlighted, width), width))
+    current_start = lines[index].timestamp
+    span = max(0.1, next_timestamp - current_start)
+    progress = (elapsed - current_start) / span
+
+    if ascii_lyrics:
+        ascii_progress = min(1.0, max(0.0, progress / ASCII_REVEAL_PORTION))
+        for art_line in ascii_art_lines(current_line, width - 4, ascii_progress):
+            highlighted = f"{Style.BOLD}{Style.YELLOW}{art_line}{Style.RESET}"
+            frame_lines.append(center_text(fit_line(highlighted, width), width))
+        caption = f"{Style.DIM}{Style.YELLOW}{current_line}{Style.RESET}"
+        frame_lines.append(center_text(fit_line(caption, width - 4), width))
+    else:
+        emoji_pack = build_emoji_pack(current_line, index)
+        current_wrapped = wrap_line(current_line, width - 16)[:3]
+        for wrapped in current_wrapped:
+            highlighted = f"{Style.BOLD}{Style.YELLOW}{emoji_pack}  {wrapped}  {emoji_pack}{Style.RESET}"
+            frame_lines.append(center_text(fit_line(highlighted, width), width))
 
     frame_lines.append("")
 
@@ -602,9 +759,6 @@ def build_frame_lines(
         frame_lines.append(center_text(fit_line(muted, width), width))
 
     frame_lines.append("")
-    current_start = lines[index].timestamp
-    span = max(0.1, next_timestamp - current_start)
-    progress = (elapsed - current_start) / span
     bar = f"{Style.MAGENTA}{progress_bar(progress)}{Style.RESET}"
     frame_lines.append(center_text(f"{bar}  {format_seconds(next_timestamp)}", width))
     frame_lines.append("")
@@ -625,8 +779,9 @@ def render_frame(
     mode: str,
     next_timestamp: float,
     render_state: RenderState,
+    ascii_lyrics: bool = False,
 ) -> None:
-    _, frame_lines = build_frame_lines(track, lines, index, elapsed, mode, next_timestamp)
+    _, frame_lines = build_frame_lines(track, lines, index, elapsed, mode, next_timestamp, ascii_lyrics)
     move_cursor_home()
     for row, line in enumerate(frame_lines, start=1):
         move_cursor_to(row)
@@ -661,6 +816,7 @@ def play_karaoke(
     lines: list[LyricLine],
     mode: str,
     audio_player: Optional[PygameAudioPlayer] = None,
+    ascii_lyrics: bool = False,
 ) -> None:
     if not lines:
         raise LyricsLookupError("La letra está vacía y no puedo reproducirla.")
@@ -681,12 +837,12 @@ def play_karaoke(
                     elapsed = time.perf_counter() - start
                     if elapsed >= current.timestamp:
                         break
-                    render_frame(track, lines, index, elapsed, mode, next_timestamp, render_state)
+                    render_frame(track, lines, index, elapsed, mode, next_timestamp, render_state, ascii_lyrics)
                     time.sleep(min(0.05, max(0.01, current.timestamp - elapsed)))
 
                 while True:
                     elapsed = time.perf_counter() - start
-                    render_frame(track, lines, index, elapsed, mode, next_timestamp, render_state)
+                    render_frame(track, lines, index, elapsed, mode, next_timestamp, render_state, ascii_lyrics)
                     if elapsed >= next_timestamp or index == len(lines) - 1:
                         break
                     time.sleep(0.06)
@@ -817,6 +973,7 @@ def main() -> int:
     try:
         if args.demo:
             track, lines, mode = demo_track()
+            ascii_lyrics = ask_yes_no("🔤 ¿Quieres que la letra se dibuje en ASCII?", False)
             audio_options = AudioOptions(
                 enabled=args.with_audio,
                 local_file=args.audio_file,
@@ -830,6 +987,7 @@ def main() -> int:
             audio_enabled = args.with_audio
             if not args.audio_file and not args.with_audio:
                 audio_enabled = ask_yes_no("🎧 ¿Quieres intentar bajar y reproducir el audio también?", False)
+            ascii_lyrics = ask_yes_no("🔤 ¿Quieres que la letra se dibuje en ASCII?", False)
             audio_options = AudioOptions(
                 enabled=audio_enabled,
                 local_file=args.audio_file,
@@ -844,7 +1002,7 @@ def main() -> int:
             print(f"{Style.CYAN}Preparando audio...{Style.RESET}")
             audio_player = prepare_audio_player(track, audio_options)
 
-        play_karaoke(track, lines, mode, audio_player)
+        play_karaoke(track, lines, mode, audio_player, ascii_lyrics)
         return 0
     except KeyboardInterrupt:
         print(f"\n{Style.GRAY}Reproducción cancelada por el usuario.{Style.RESET}")

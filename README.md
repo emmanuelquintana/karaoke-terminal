@@ -11,6 +11,7 @@
 - 🎧 **Soporte de Audio:** Descarga automática de audio desde YouTube o reproducción de archivos locales.
 - 🧠 **Modo Inteligente:** Si no hay letras sincronizadas, el sistema estima los tiempos basándose en el contenido.
 - 🎨 **Estética Premium:** Uso de colores ANSI, emojis contextuales y centro de texto dinámico.
+- 🔤 **Letra ASCII:** Opción para dibujar la línea actual como arte ASCII progresivo en la terminal.
 - 🕹️ **Modo Demo:** Prueba la experiencia visual al instante sin necesidad de internet.
 - 📂 **Caché Eficiente:** Guarda las letras y el audio descargado para un acceso rápido sin conexión.
 
@@ -53,6 +54,12 @@ python karaoke_terminal.py --artist "Enjambre" --song "Vida en el Espejo"
 Activa la búsqueda y descarga de audio:
 ```bash
 python karaoke_terminal.py --artist "Coldplay" --song "Yellow" --with-audio
+```
+
+### Dibujar la Letra en ASCII
+Ejecuta el karaoke normalmente. Antes de comenzar, la terminal te preguntará si quieres activar el render progresivo de la línea actual como arte ASCII:
+```bash
+python karaoke_terminal.py --artist "Enjambre" --song "Vida en el Espejo"
 ```
 
 ### Usar un Archivo de Audio Local

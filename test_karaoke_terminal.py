@@ -9,12 +9,17 @@ from karaoke_terminal import (
     AudioPlaybackError,
     RenderState,
     TrackInfo,
+    ascii_art_lines,
+    ascii_safe_text,
     audio_cache_path,
+    build_arg_parser,
     build_emoji_pack,
+    build_ascii_block,
     estimate_timed_lyrics,
     fit_line,
     parse_lrc,
     prepare_audio_player,
+    reveal_ascii_block,
     render_frame,
     slugify_filename,
     timeline_from_text,
@@ -59,6 +64,29 @@ class KaraokeTerminalTests(unittest.TestCase):
 
     def test_fit_line_truncates_wide_text_safely(self) -> None:
         self.assertEqual(fit_line("🎵abcd", 4), "🎵a…")
+
+    def test_ascii_art_lines_draw_progressively(self) -> None:
+        hidden = ascii_art_lines("Ámame", 96, 0.0)
+        drawn = ascii_art_lines("Ámame", 96, 1.0)
+        drawn_text = "\n".join(drawn)
+        self.assertTrue(all(set(row) <= {" "} for row in hidden if row))
+        self.assertRegex(drawn_text, r"[_/\\|#]")
+        self.assertGreaterEqual(len(drawn), 5)
+
+    def test_ascii_reveal_moves_top_to_bottom(self) -> None:
+        rows = ["top", "middle", "bottom"]
+        self.assertEqual(reveal_ascii_block(rows, 0.34), ["top", "      ", "      "])
+
+    def test_ascii_safe_text_keeps_spanish_accents_readable(self) -> None:
+        self.assertEqual(ascii_safe_text("¿qué hago?"), "que hago?")
+
+    def test_ascii_rows_keep_common_width(self) -> None:
+        rows = build_ascii_block("que hago?", 96)
+        self.assertEqual(len({len(row) for row in rows}), 1)
+
+    def test_arg_parser_keeps_ascii_as_terminal_question(self) -> None:
+        help_text = build_arg_parser().format_help()
+        self.assertNotIn("--ascii", help_text)
 
     def test_slugify_filename_normalizes_text(self) -> None:
         self.assertEqual(slugify_filename("Enjambre / Dulce Soledad"), "enjambre-dulce-soledad")
