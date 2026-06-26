@@ -401,7 +401,14 @@ html, body {
 
 /* ===================== RESPONSIVE ===================== */
 @media (max-width: 880px) {
-  .player { grid-template-columns: 1fr; gap: 16px; align-content: start; padding-top: 6px; }
+  /* Una sola columna: la card ocupa su contenido (fila auto) y la letra el
+     resto del alto (1fr) con su propio scroll → nunca se cruzan. */
+  .player {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: clamp(0.75rem, 2vh, 1.25rem);
+    align-items: stretch;
+  }
   .now-playing { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 16px; align-self: auto; margin-top: 0; }
   .cover-wrap { width: 84px; }
   .now-playing .meta { flex: 1; min-width: 140px; }
@@ -411,9 +418,11 @@ html, body {
   .search-fields input { width: 38vw; max-width: 168px; }
 }
 @media (max-width: 560px) {
+  /* En teléfonos mantenemos la card COMPACTA (horizontal) para que la letra
+     ocupe la mayor parte de la pantalla, en vez de una carátula enorme. */
   .searchbar { flex-wrap: wrap; }
-  .now-playing { flex-direction: column; align-items: stretch; }
-  .cover-wrap { width: 100%; }
+  .cover-wrap { width: 72px; }
+  .song-title { font-size: 18px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
