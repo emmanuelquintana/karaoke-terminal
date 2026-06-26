@@ -152,11 +152,13 @@ html, body {
   position: relative; z-index: 2;
   height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
-  padding: 20px clamp(16px, 4vw, 56px) 30px;
+  /* Espacio fluido entre el buscador y el contenido de abajo (card/letra). */
+  gap: clamp(1rem, 4vh, 3rem);
+  padding: clamp(0.75rem, 2.5vh, 1.5rem) clamp(16px, 4vw, 56px) clamp(1rem, 3vh, 2rem);
 }
 
 /* ===================== BUSCADOR ===================== */
-.searchbar { display: flex; align-items: center; gap: 12px; justify-content: center; margin-bottom: 8px; flex-shrink: 0; }
+.searchbar { display: flex; align-items: center; gap: 12px; justify-content: center; flex-shrink: 0; }
 .search-fields {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 18px; border-radius: 999px;
@@ -286,20 +288,25 @@ html, body {
 /* ===================== REPRODUCTOR ===================== */
 .player {
   flex: 1; display: grid;
-  /* Columnas proporcionales con fr: la carátula ocupa hasta ~20rem y la letra
-     toma el resto del espacio disponible. */
-  grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
-  gap: clamp(1.25rem, 3vw, 3rem);
+  /* Columnas proporcionales con fr: la carátula es más grande (hasta ~30rem,
+     pero acotada por la altura con vh para que siempre quepa con el espacio
+     del buscador) y la letra toma el resto del espacio disponible. */
+  grid-template-columns: minmax(0, min(30rem, 50vh)) minmax(0, 1fr);
+  gap: clamp(1.5rem, 4vw, 4rem);
   align-items: center; min-height: 0;
   /* Ancho fluido (%) acotado con rem para que no se estire en monitores anchos;
      centrado con margin auto. */
-  width: min(92%, 58rem);
+  width: min(94%, 72rem);
   margin-inline: auto; align-self: center;
 }
 
 .now-playing {
   display: flex; flex-direction: column; gap: 18px;
   padding: 24px; border-radius: 28px;
+  /* La card se alinea arriba (cerca de donde empieza la letra) en vez de
+     quedar centrada verticalmente. El espacio con el buscador lo da el gap
+     del contenedor (.stage), no un margen fijo. */
+  align-self: start;
   animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
@@ -361,11 +368,12 @@ html, body {
 
 /* ===================== LETRA ===================== */
 .lyrics-pane { position: relative; height: 100%; min-height: 0; display: flex; align-items: stretch; overflow: hidden; }
-.lyrics { flex: 1; overflow-y: auto; scrollbar-width: none; padding: 26vh 8px 55vh; scroll-behavior: smooth; font-family: var(--lyric-font); }
+.lyrics { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; padding: 24vh 0.5rem 55vh; scroll-behavior: smooth; font-family: var(--lyric-font); }
 .lyrics::-webkit-scrollbar { display: none; }
 .line {
   font-size: clamp(1.25rem, 1.9vw, 1.8rem); font-weight: 700; letter-spacing: -0.02em;
   line-height: 1.28; padding: 10px 6px; color: var(--faint); filter: blur(0.4px);
+  overflow-wrap: break-word; word-break: break-word;
   cursor: pointer; transform-origin: left center;
   transition: color 0.35s ease, opacity 0.35s ease, filter 0.35s ease, transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -393,8 +401,15 @@ html, body {
 
 /* ===================== RESPONSIVE ===================== */
 @media (max-width: 880px) {
-  .player { grid-template-columns: 1fr; gap: 16px; align-content: start; padding-top: 6px; }
-  .now-playing { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+  /* Una sola columna: la card ocupa su contenido (fila auto) y la letra el
+     resto del alto (1fr) con su propio scroll → nunca se cruzan. */
+  .player {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: clamp(0.75rem, 2vh, 1.25rem);
+    align-items: stretch;
+  }
+  .now-playing { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 16px; align-self: auto; margin-top: 0; }
   .cover-wrap { width: 84px; }
   .now-playing .meta { flex: 1; min-width: 140px; }
   .seek, .controls, .volume { width: 100%; }
@@ -403,9 +418,11 @@ html, body {
   .search-fields input { width: 38vw; max-width: 168px; }
 }
 @media (max-width: 560px) {
+  /* En teléfonos mantenemos la card COMPACTA (horizontal) para que la letra
+     ocupe la mayor parte de la pantalla, en vez de una carátula enorme. */
   .searchbar { flex-wrap: wrap; }
-  .now-playing { flex-direction: column; align-items: stretch; }
-  .cover-wrap { width: 100%; }
+  .cover-wrap { width: 72px; }
+  .song-title { font-size: 18px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
