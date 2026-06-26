@@ -152,11 +152,13 @@ html, body {
   position: relative; z-index: 2;
   height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
-  padding: 20px clamp(16px, 4vw, 56px) 30px;
+  /* Espacio fluido entre el buscador y el contenido de abajo (card/letra). */
+  gap: clamp(1rem, 4vh, 3rem);
+  padding: clamp(0.75rem, 2.5vh, 1.5rem) clamp(16px, 4vw, 56px) clamp(1rem, 3vh, 2rem);
 }
 
 /* ===================== BUSCADOR ===================== */
-.searchbar { display: flex; align-items: center; gap: 12px; justify-content: center; margin-bottom: 8px; flex-shrink: 0; }
+.searchbar { display: flex; align-items: center; gap: 12px; justify-content: center; flex-shrink: 0; }
 .search-fields {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 18px; border-radius: 999px;
@@ -287,9 +289,9 @@ html, body {
 .player {
   flex: 1; display: grid;
   /* Columnas proporcionales con fr: la carátula es más grande (hasta ~30rem,
-     pero acotada por la altura con vh para que no se desborde en pantallas
-     bajas) y la letra toma el resto del espacio disponible. */
-  grid-template-columns: minmax(0, min(30rem, 58vh)) minmax(0, 1fr);
+     pero acotada por la altura con vh para que siempre quepa con el espacio
+     del buscador) y la letra toma el resto del espacio disponible. */
+  grid-template-columns: minmax(0, min(30rem, 50vh)) minmax(0, 1fr);
   gap: clamp(1.5rem, 4vw, 4rem);
   align-items: center; min-height: 0;
   /* Ancho fluido (%) acotado con rem para que no se estire en monitores anchos;
@@ -302,9 +304,9 @@ html, body {
   display: flex; flex-direction: column; gap: 18px;
   padding: 24px; border-radius: 28px;
   /* La card se alinea arriba (cerca de donde empieza la letra) en vez de
-     quedar centrada verticalmente. */
+     quedar centrada verticalmente. El espacio con el buscador lo da el gap
+     del contenedor (.stage), no un margen fijo. */
   align-self: start;
-  margin-top: clamp(0.5rem, 5vh, 3.5rem);
   animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
