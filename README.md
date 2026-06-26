@@ -6,6 +6,7 @@
 
 ## ✨ Características Principales
 
+- 🖥️ **Interfaz Visual (NUEVO):** Modo navegador estilo reproductor con carátula del álbum, mini-player, letra sincronizada con auto-scroll y fondo con efecto *blur* de la portada.
 - 🎤 **Sincronización en Tiempo Real:** Visualización de letras línea por línea con barra de progreso.
 - 🔍 **Búsqueda Automática:** Conexión con `lrclib.net` para obtener letras sincronizadas y planas.
 - 🎧 **Soporte de Audio:** Descarga automática de audio desde YouTube o reproducción de archivos locales.
@@ -37,6 +38,21 @@ pip install -r requirements.txt
 ---
 
 ## 🛠️ Uso y Comandos
+
+### 🖥️ Interfaz Visual (carátula + mini-player + letra animada)
+La nueva experiencia visual se ejecuta en tu navegador y reutiliza todo el motor (letras de lrclib, descarga de audio, etc.). El audio del navegador da sincronía perfecta y el fondo toma la carátula con *blur*.
+
+```bash
+# Opción A: desde el script principal
+python karaoke_terminal.py --web
+
+# Opción B: directamente el servidor
+python karaoke_web.py
+```
+
+Se abre solo en `http://127.0.0.1:8765/`. Escribe artista y canción (o usa una sugerencia) y listo. Atajos: **Espacio** (play/pausa), **←/→** (±5s), clic en una línea para saltar a ese momento.
+
+> La carátula se obtiene de la **iTunes Search API** (gratuita, sin API key). El audio se descarga con `yt-dlp`; si no está instalado, la letra igual avanza con un reloj interno.
 
 ### Iniciar Karaoke Interactivo
 Simplemente ejecuta el script y sigue las instrucciones en pantalla:
@@ -88,7 +104,9 @@ python karaoke_terminal.py --demo
 ---
 
 ## 🛡️ Estructura del Proyecto
-- `karaoke_terminal.py`: Script principal.
+- `karaoke_terminal.py`: Script principal (modo terminal + motor de letras/audio).
+- `karaoke_web.py`: Servidor web de la interfaz visual (Flask + iTunes Search API).
+- `web/`: Frontend de la interfaz visual (`index.html`, `style.css`, `app.js`).
 - `.karaoke_cache.json`: Almacén local de letras.
 - `.audio_cache/`: Directorio donde se guardan los archivos mp3 descargados.
 - `requirements.txt`: Dependencias del sistema.

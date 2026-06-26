@@ -945,6 +945,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Lanza una demo local para probar la animación sin internet.",
     )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Abre la interfaz visual (carátula, mini-player y letra) en el navegador.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Puerto para la interfaz visual web. Default: 8765.",
+    )
     return parser
 
 
@@ -969,6 +980,18 @@ def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
     configure_console_streams()
+
+    if args.web:
+        try:
+            import karaoke_web
+        except ImportError as exc:
+            print(
+                f"{Style.YELLOW}Falta Flask para la interfaz web. Instala con: pip install flask{Style.RESET}",
+                file=sys.stderr,
+            )
+            return 1
+        karaoke_web.launch(port=args.port, open_browser=True)
+        return 0
 
     try:
         if args.demo:

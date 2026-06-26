@@ -2,3 +2,4 @@ yt-dlp>=2024.3.10
 imageio-ffmpeg>=0.4.9
 pygame>=2.5.2
 pyfiglet>=1.0.2
+flask>=3.0.0
