@@ -54,6 +54,21 @@ Se abre solo en `http://127.0.0.1:8765/`. Escribe artista y canción (o usa una 
 
 > La carátula se obtiene de la **iTunes Search API** (gratuita, sin API key). El audio se descarga con `yt-dlp`; si no está instalado, la letra igual avanza con un reloj interno.
 
+### 🌐 Compartir por una URL pública (Cloudflare Tunnel)
+¿Quieres que alguien más lo abra desde su navegador conservando el audio? Exponlo con un túnel **desde tu PC** (la IP residencial evita el bloqueo de YouTube a `yt-dlp`):
+
+```powershell
+# 1) Instala cloudflared una sola vez
+winget install --id Cloudflare.cloudflared
+
+# 2) Lanza app + túnel con un comando
+./serve_public.ps1
+```
+
+El script imprime una URL `https://<algo>.trycloudflare.com` que funciona desde cualquier lado **mientras tu PC esté encendida**. El servidor sigue escuchando solo en `localhost`; solo el túnel lo expone.
+
+> **Nota:** la URL del modo rápido cambia en cada ejecución. Para una URL fija necesitas una cuenta de Cloudflare + un túnel con nombre y tu propio dominio. Hospedarlo en la nube (Render/Railway/Vercel) corre la app, pero la descarga de audio fallará porque YouTube bloquea las IPs de datacenter; para eso usa la versión de solo letra.
+
 ### Iniciar Karaoke Interactivo
 Simplemente ejecuta el script y sigue las instrucciones en pantalla:
 ```bash
