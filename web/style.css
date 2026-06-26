@@ -286,14 +286,15 @@ html, body {
 /* ===================== REPRODUCTOR ===================== */
 .player {
   flex: 1; display: grid;
-  /* Columnas proporcionales con fr: la carátula ocupa hasta ~20rem y la letra
-     toma el resto del espacio disponible. */
-  grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
-  gap: clamp(1.25rem, 3vw, 3rem);
+  /* Columnas proporcionales con fr: la carátula es más grande (hasta ~30rem,
+     pero acotada por la altura con vh para que no se desborde en pantallas
+     bajas) y la letra toma el resto del espacio disponible. */
+  grid-template-columns: minmax(0, min(30rem, 58vh)) minmax(0, 1fr);
+  gap: clamp(1.5rem, 4vw, 4rem);
   align-items: center; min-height: 0;
   /* Ancho fluido (%) acotado con rem para que no se estire en monitores anchos;
      centrado con margin auto. */
-  width: min(92%, 58rem);
+  width: min(94%, 72rem);
   margin-inline: auto; align-self: center;
 }
 
