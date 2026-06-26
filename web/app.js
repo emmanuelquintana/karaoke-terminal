@@ -399,17 +399,28 @@ function setActiveLine(idx) {
     else if (d <= 2) node.classList.add("near");
     else node.classList.add("far");
   });
+  scrollActiveIntoView(idx, "smooth");
+}
+
+// Centra la línea activa en el panel. Se recalcula también al redimensionar
+// la ventana (por eso "solo se veía bien al ajustar"): ahora el layout se
+// reajusta solo.
+function scrollActiveIntoView(idx, behavior) {
   const pane = el.lyrics;
   const active = state.lineEls[idx];
   if (active) {
-    // Línea activa ligeramente por encima del centro (estilo Apple Music).
     const target = active.offsetTop - pane.clientHeight * 0.42 + active.clientHeight / 2;
-    pane.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    pane.scrollTo({ top: Math.max(0, target), behavior: behavior || "auto" });
   } else {
-    // Aún no empieza la letra: mostramos el inicio arriba.
-    pane.scrollTo({ top: 0, behavior: "smooth" });
+    pane.scrollTo({ top: 0, behavior: behavior || "auto" });
   }
 }
+
+let resizeRaf = null;
+window.addEventListener("resize", () => {
+  if (resizeRaf) cancelAnimationFrame(resizeRaf);
+  resizeRaf = requestAnimationFrame(() => scrollActiveIntoView(state.activeIndex, "auto"));
+});
 
 // --------------------------------------------------------------------------- //
 // Eventos
