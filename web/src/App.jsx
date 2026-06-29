@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { coverProxyUrl, createStudioSession, exportStudioSession, loadSong, songAudioUrl, syncStudioSession } from "./api/client.js";
+import { coverProxyUrl, createStudioSession, exportStudioSession, loadSong, songAudioUrl, syncSongLyrics, syncStudioSession } from "./api/client.js";
 import { DEFAULT_PALETTE, INITIAL_STUDIO, LYRIC_FONTS, clamp, formatTime } from "./constants.js";
 import { SearchBar } from "./components/molecules/SearchBar.jsx";
 import { KaraokePlayer } from "./components/organisms/KaraokePlayer.jsx";
@@ -110,6 +110,7 @@ export function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [hasAudio, setHasAudio] = useState(false);
   const [audioNote, setAudioNote] = useState("");
+  const [lyricSyncing, setLyricSyncing] = useState(false);
   const [playingState, setPlayingState] = useState("paused");
   const [volume, setVolume] = useState(0.85);
   const [coverUrl, setCoverUrl] = useState("");
@@ -146,6 +147,7 @@ export function App() {
   const studioRef = useRef(studio);
   const volumeRef = useRef(volume);
   const previousStudioClipStartRef = useRef(INITIAL_STUDIO.clipStart);
+  const lyricSyncTokenRef = useRef(0);
 
   const activeIndex = useMemo(() => activeLineIndex(lines, currentTime), [lines, currentTime]);
 
@@ -338,6 +340,37 @@ export function App() {
     applyPalette(DEFAULT_PALETTE);
   }, []);
 
+  const runKaraokeLyricSync = useCallback(async ({ artist: syncArtist, title: syncTitle, lines: syncLines, duration: syncDuration, mode: syncMode }) => {
+    if (!syncArtist || !syncTitle || !Array.isArray(syncLines) || !syncLines.length) return;
+    const token = lyricSyncTokenRef.current + 1;
+    lyricSyncTokenRef.current = token;
+    setLyricSyncing(true);
+
+    try {
+      const data = await syncSongLyrics({
+        artist: syncArtist,
+        title: syncTitle,
+        lines: syncLines,
+        duration: syncDuration,
+        mode: syncMode,
+      });
+      if (lyricSyncTokenRef.current !== token || !data?.applied || !Array.isArray(data.lines) || !data.lines.length) return;
+
+      const syncedLines = data.lines;
+      const syncedDuration = Number(data.duration || syncDuration || 0);
+      linesRef.current = syncedLines;
+      durationRef.current = syncedDuration;
+      setLines(syncedLines);
+      if (syncedDuration > 0) setDuration(syncedDuration);
+      setSong((previous) => (previous ? { ...previous, mode: data.mode || previous.mode } : previous));
+      showToast("Letra sincronizada con el audio real.");
+    } catch (_err) {
+      // Esta mejora es opcional: si ASR no esta instalado, la letra actual sigue funcionando.
+    } finally {
+      if (lyricSyncTokenRef.current === token) setLyricSyncing(false);
+    }
+  }, [showToast]);
+
   const handleLoadSong = useCallback(async (artistValue = artist, titleValue = title) => {
     const requestedArtist = artistValue.trim();
     const requestedTitle = titleValue.trim();
@@ -348,6 +381,8 @@ export function App() {
 
     setLoading(true);
     stopPlayback();
+    lyricSyncTokenRef.current += 1;
+    setLyricSyncing(false);
 
     try {
       const data = await loadSong(requestedArtist, requestedTitle);
@@ -374,6 +409,13 @@ export function App() {
         setAudioNote("");
         audioRef.current.src = songAudioUrl(requestedArtist, requestedTitle);
         audioRef.current.load();
+        void runKaraokeLyricSync({
+          artist: requestedArtist,
+          title: requestedTitle,
+          lines: nextLines,
+          duration: nextDuration,
+          mode: data.mode || "",
+        });
       } else {
         hasAudioRef.current = false;
         setHasAudio(false);
@@ -388,7 +430,7 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [artist, setCover, showToast, startPlayback, stopPlayback, title]);
+  }, [artist, runKaraokeLyricSync, setCover, showToast, startPlayback, stopPlayback, title]);
 
   const handleSuggestion = useCallback((suggestion) => {
     setArtist(suggestion.artist);
@@ -793,7 +835,7 @@ export function App() {
         activeIndex={activeIndex}
         coverUrl={coverUrl}
         coverReady={coverReady}
-        audioNote={audioNote}
+        audioNote={lyricSyncing ? "Sincronizando letra con el audio real..." : audioNote}
         currentTime={currentTime}
         duration={duration}
         playingState={playingState}

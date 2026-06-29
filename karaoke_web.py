@@ -15,6 +15,7 @@ import argparse
 import difflib
 import hashlib
 import html
+import importlib.util
 import json
 import math
 import re
@@ -231,6 +232,60 @@ def _song_payload(artist: str, title: str) -> tuple[dict, int]:
         return {"error": f"Error no controlado({exc})"}, 500
 
 
+def _sync_song_lyrics_payload(payload: dict) -> tuple[dict, int]:
+    artist = (payload.get("artist") or "").strip()
+    title = (payload.get("title") or "").strip()
+    lines = payload.get("lines") if isinstance(payload.get("lines"), list) else []
+    mode = (payload.get("mode") or "").strip()
+    duration = _as_float(payload.get("duration"), 0.0)
+    if not artist or not title or not lines:
+        return {"error": "Faltan artista, canción o líneas para sincronizar."}, 400
+    if not asr_runtime_available():
+        return {"error": "ASR local no disponible. Instala `pip install -r requirements-asr.txt`."}, 503
+
+    try:
+        ensure_studio_cache_dir()
+        audio_path = Path(engine.download_audio_track(artist, title))
+        max_seconds = _bounded((duration or 240.0) + 8.0, 90.0, 420.0)
+        events = transcribe_video_audio_events(audio_path, max_seconds=max_seconds)
+    except engine.AudioPlaybackError as exc:
+        return {"error": str(exc)}, 503
+    except subprocess.TimeoutExpired:
+        return {"error": "La sincronización de karaoke tardó demasiado y se canceló."}, 504
+    except Exception as exc:  # pragma: no cover
+        return {"error": f"No pude sincronizar el karaoke: {exc}"}, 500
+
+    if not events:
+        return {"error": "No pude transcribir el audio local para sincronizar la letra."}, 503
+
+    aligned_lines, confidence = align_lyrics_to_timed_text(lines, events)
+    required_confidence = 0.52 if "sincronizado" in mode.casefold() else 0.38
+    if not aligned_lines or confidence < required_confidence:
+        return {
+            "applied": False,
+            "confidence": confidence,
+            "requiredConfidence": required_confidence,
+            "timelineSource": "asr-local",
+            "message": "No hubo coincidencia suficiente para reemplazar los tiempos actuales.",
+        }, 200
+
+    new_duration = duration
+    if aligned_lines:
+        new_duration = max(duration, _as_float(aligned_lines[-1].get("end"), aligned_lines[-1]["time"] + 4.0))
+    synced_mode = mode or "sincronizado"
+    if "audio" not in synced_mode.casefold():
+        synced_mode = f"{synced_mode} por audio".strip()
+    return {
+        "applied": True,
+        "lines": aligned_lines,
+        "mode": synced_mode,
+        "duration": round(new_duration, 3),
+        "timelineSource": "asr-local",
+        "timelineConfidence": confidence,
+        "firstCaptionAt": round(first_singable_line_time({"lines": aligned_lines}), 2),
+    }, 200
+
+
 def _prepare_studio_payload(payload: dict) -> tuple[dict, int]:
     video_ref = (payload.get("video") or "").strip()
     artist = (payload.get("artist") or "").strip()
@@ -344,6 +399,30 @@ def _openapi_spec() -> dict:
                         {"name": "title", "in": "query", "required": True, "schema": {"type": "string"}},
                     ],
                     "responses": {"200": {"description": "Audio MP3", "content": {"audio/mpeg": {}}}},
+                }
+            },
+            "/songs/lyrics-sync": {
+                "post": {
+                    "summary": "Sincroniza la letra de karaoke contra el audio real",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["artist", "title", "lines"],
+                                    "properties": {
+                                        "artist": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "mode": {"type": "string"},
+                                        "duration": {"type": "number"},
+                                        "lines": {"type": "array", "items": {"type": "object"}},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Sincronización evaluada", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiEnvelope"}}}}},
                 }
             },
             "/covers": {
@@ -788,6 +867,10 @@ def estimated_lyric_correction(song: dict) -> float:
     lead_in = estimated_plain_lead_in(_as_float(song.get("duration"), 0.0), len(lines))
     first_line = first_singable_line_time(song)
     return round(max(0.0, lead_in - first_line), 2)
+
+
+def asr_runtime_available() -> bool:
+    return importlib.util.find_spec("faster_whisper") is not None or importlib.util.find_spec("whisper") is not None
 
 
 def _clean_caption_text(value: str) -> str:
@@ -1313,8 +1396,10 @@ def distribute_lyrics_over_segments(lyric_lines: list[dict], events: list[dict])
     return aligned, round(confidence, 3)
 
 
-def transcribe_video_audio_events(video_path: Path) -> list[dict]:
+def transcribe_video_audio_events(video_path: Path, max_seconds: float = 210.0) -> list[dict]:
     """ASR local opcional. Se usa si existe faster-whisper/openai-whisper instalado."""
+    if not asr_runtime_available():
+        return []
     sync_id = uuid.uuid4().hex[:10]
     wav_path = STUDIO_CACHE_DIR / f"asr-{sync_id}.wav"
     cmd = [
@@ -1330,7 +1415,7 @@ def transcribe_video_audio_events(video_path: Path) -> list[dict]:
         "-ar",
         "16000",
         "-t",
-        "210",
+        f"{_bounded(max_seconds, 15.0, 480.0):.1f}",
         str(wav_path),
     ]
     try:
@@ -2255,6 +2340,16 @@ def api_audio() -> Response:
         return api_error(f"No pude preparar el audio: {exc}", status=500)
     # conditional=True habilita peticiones Range para hacer seek en el <audio>.
     return send_file(path, mimetype="audio/mpeg", conditional=True)
+
+
+@app.route("/api/v1/songs/lyrics-sync", methods=["POST"])
+@app.route("/api/song/sync", methods=["POST"])
+def api_song_lyrics_sync() -> Response:
+    payload, status = _sync_song_lyrics_payload(_json_payload())
+    if status >= 400:
+        return api_error(payload.get("error", "No pude sincronizar la letra."), status=status)
+    message = "Letra sincronizada con audio." if payload.get("applied") else "Sincronización evaluada."
+    return api_success(payload, code=5, message=message)
 
 
 @app.route("/api/v1/studio-sessions", methods=["POST"])

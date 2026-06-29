@@ -54,3 +54,11 @@ export function loadSong(artist, title) {
   const query = new URLSearchParams({ artist, title });
   return apiJson(`/songs?${query.toString()}`);
 }
+
+export function syncSongLyrics(payload) {
+  return apiJson("/songs/lyrics-sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
