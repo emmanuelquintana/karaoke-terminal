@@ -18,6 +18,7 @@ import html
 import json
 import math
 import re
+import shutil
 import subprocess
 import time
 import threading
@@ -49,6 +50,7 @@ MAX_STUDIO_SYNC_OFFSET = 180.0
 
 STUDIO_SESSIONS: dict[str, dict] = {}
 STUDIO_EXPORTS: dict[str, Path] = {}
+FRONTEND_BUILD_CHECKED = False
 
 app = Flask(__name__, static_folder=None)
 
@@ -117,6 +119,9 @@ def api_error(
 def _not_found(_exc) -> Response:
     if request.path.startswith("/api/"):
         return api_error("Recurso no encontrado.", status=404)
+    ensure_frontend_build()
+    if not (FRONTEND_DIST_DIR / "index.html").exists():
+        return frontend_build_missing_response()
     static_root = _frontend_root()
     return _no_cache(send_from_directory(static_root, "index.html"))
 
@@ -133,6 +138,59 @@ def _internal_error(exc) -> Response:
 
 def _frontend_root() -> Path:
     return FRONTEND_DIST_DIR if (FRONTEND_DIST_DIR / "index.html").exists() else STATIC_DIR
+
+
+def _frontend_source_files() -> list[Path]:
+    sources = [BASE_DIR / "package.json", BASE_DIR / "package-lock.json", BASE_DIR / "vite.config.js", STATIC_DIR / "index.html", STATIC_DIR / "style.css"]
+    src_dir = STATIC_DIR / "src"
+    if src_dir.exists():
+        sources.extend(path for path in src_dir.rglob("*") if path.is_file())
+    return [path for path in sources if path.exists()]
+
+
+def _frontend_build_is_current() -> bool:
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if not index_path.exists():
+        return False
+    dist_mtime = index_path.stat().st_mtime
+    return all(path.stat().st_mtime <= dist_mtime for path in _frontend_source_files())
+
+
+def ensure_frontend_build() -> None:
+    global FRONTEND_BUILD_CHECKED
+    if FRONTEND_BUILD_CHECKED and (FRONTEND_DIST_DIR / "index.html").exists():
+        return
+    FRONTEND_BUILD_CHECKED = True
+    if _frontend_build_is_current():
+        return
+    if not (BASE_DIR / "package.json").exists():
+        return
+    npm = shutil.which("npm")
+    if not npm:
+        return
+    try:
+        if not (BASE_DIR / "node_modules").exists():
+            subprocess.run([npm, "install"], cwd=BASE_DIR, capture_output=True, text=True, timeout=180)
+        subprocess.run([npm, "run", "build"], cwd=BASE_DIR, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def frontend_build_missing_response() -> Response:
+    return Response(
+        """<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Frontend no compilado</title></head>
+<body style="font-family: system-ui, sans-serif; background:#08080b; color:#f5f5f7; display:grid; min-height:100vh; place-items:center; margin:0;">
+  <main style="max-width: 640px; padding: 32px; line-height:1.5;">
+    <h1>Frontend React no compilado</h1>
+    <p>Ejecuta <code>npm install</code> y <code>npm run build</code>, o usa <code>./serve_public.ps1</code> para compilar antes de abrir el túnel.</p>
+  </main>
+</body>
+</html>""",
+        status=503,
+        mimetype="text/html",
+    )
 
 
 def _json_payload() -> dict:
@@ -2088,11 +2146,15 @@ def _no_cache(resp: Response) -> Response:
 
 @app.route("/")
 def index() -> Response:
+    ensure_frontend_build()
+    if not (FRONTEND_DIST_DIR / "index.html").exists():
+        return frontend_build_missing_response()
     return _no_cache(send_from_directory(_frontend_root(), "index.html"))
 
 
 @app.route("/web/<path:filename>")
 def static_files(filename: str) -> Response:
+    ensure_frontend_build()
     static_root = _frontend_root()
     if (static_root / filename).exists():
         return _no_cache(send_from_directory(static_root, filename))
