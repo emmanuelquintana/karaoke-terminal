@@ -7,6 +7,7 @@
 ## ✨ Características Principales
 
 - 🖥️ **Interfaz Visual (NUEVO):** Modo navegador estilo reproductor con carátula del álbum, mini-player, letra sincronizada con auto-scroll y fondo con efecto *blur* de la portada.
+- 🎬 **Estudio TikTok:** Busca un video, selecciona canción, previsualiza subtítulos sincronizados, ajusta fuente/tamaño/posición/formato y exporta un MP4 vertical u horizontal de hasta 58 segundos.
 - 🎤 **Sincronización en Tiempo Real:** Visualización de letras línea por línea con barra de progreso.
 - 🔍 **Búsqueda Automática:** Conexión con `lrclib.net` para obtener letras sincronizadas y planas.
 - 🎧 **Soporte de Audio:** Descarga automática de audio desde YouTube o reproducción de archivos locales.
@@ -30,6 +31,14 @@ cd Player-terminal-music
 Asegúrate de tener Python 3.9+ instalado:
 ```bash
 pip install -r requirements.txt
+npm install
+npm run build
+```
+
+Para sincronización más robusta de letras sin timestamps (ASR local con Whisper), instala también:
+
+```bash
+pip install -r requirements-asr.txt
 ```
 
 > [!IMPORTANT]
@@ -40,7 +49,7 @@ pip install -r requirements.txt
 ## 🛠️ Uso y Comandos
 
 ### 🖥️ Interfaz Visual (carátula + mini-player + letra animada)
-La nueva experiencia visual se ejecuta en tu navegador y reutiliza todo el motor (letras de lrclib, descarga de audio, etc.). El audio del navegador da sincronía perfecta y el fondo toma la carátula con *blur*.
+La experiencia visual está migrada a **React + Vite** con Atomic Design y reutiliza todo el motor (letras de lrclib, descarga de audio, etc.). El audio del navegador da sincronía perfecta y el fondo toma la carátula con *blur*.
 
 ```bash
 # Opción A: desde el script principal
@@ -53,6 +62,33 @@ python karaoke_web.py
 Se abre solo en `http://127.0.0.1:8765/`. Escribe artista y canción (o usa una sugerencia) y listo. Atajos: **Espacio** (play/pausa), **←/→** (±5s), clic en una línea para saltar a ese momento.
 
 > La carátula se obtiene de la **iTunes Search API** (gratuita, sin API key). El audio se descarga con `yt-dlp`; si no está instalado, la letra igual avanza con un reloj interno.
+
+### API REST v1 + Swagger
+El backend expone endpoints versionados bajo `/api/v1` y todas las respuestas JSON usan el envelope:
+
+```json
+{
+  "code": "HX_BO_001",
+  "message": "OK",
+  "traceId": "c49c5368e1c7a6b5",
+  "data": {},
+  "metadata": { "page": 0, "size": 0, "elements": 0 }
+}
+```
+
+La documentación Swagger está disponible en `http://127.0.0.1:8765/api/v1/docs`.
+
+### 🎬 Estudio TikTok (video + letra quemada)
+Dentro de la interfaz visual cambia al modo **Estudio**. Ahí puedes:
+
+- Buscar un video por URL de YouTube o texto.
+- Elegir artista y canción para obtener la letra desde LRCLIB.
+- Ajustar formato vertical/horizontal, fuente, tamaño, color, posición y desfase de la letra.
+- Pulsar **Sincronizar audio** para comparar el audio del video contra la pista de la canción y aplicar automáticamente el desfase de la letra.
+- Seleccionar el inicio y duración del clip, con límite de 58 segundos.
+- Exportar y descargar un MP4 con los subtítulos ya integrados.
+
+El estudio descarga el video con `yt-dlp`, extrae audio con FFmpeg vía `imageio-ffmpeg` y calcula una huella ligera de audio para detectar en qué segundo empieza la canción dentro del video. Para letras sin timestamps reales usa una sincronización híbrida: primero intenta timeline temporizado del video, luego ASR local con `faster-whisper` si está instalado, y al final cae a una estimación audio-aware. Si el match no es claro, usa **Desfase letra** para ajustar manualmente.
 
 ### 🌐 Compartir por una URL pública (Cloudflare Tunnel)
 ¿Quieres que alguien más lo abra desde su navegador conservando el audio? Exponlo con un túnel **desde tu PC** (la IP residencial evita el bloqueo de YouTube a `yt-dlp`):
@@ -120,11 +156,14 @@ python karaoke_terminal.py --demo
 
 ## 🛡️ Estructura del Proyecto
 - `karaoke_terminal.py`: Script principal (modo terminal + motor de letras/audio).
-- `karaoke_web.py`: Servidor web de la interfaz visual (Flask + iTunes Search API).
-- `web/`: Frontend de la interfaz visual (`index.html`, `style.css`, `app.js`).
+- `karaoke_web.py`: Servidor web REST v1 de la interfaz visual (Flask + Swagger).
+- `web/src/`: Frontend React organizado con Atomic Design.
+- `web/style.css`: Estética visual compartida por los componentes React.
+- `web/dist/`: Build generado por Vite para servir desde Flask.
 - `.karaoke_cache.json`: Almacén local de letras.
 - `.audio_cache/`: Directorio donde se guardan los archivos mp3 descargados.
 - `requirements.txt`: Dependencias del sistema.
+- `package.json`: Dependencias y scripts del frontend React.
 
 ---
 

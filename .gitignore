@@ -4,10 +4,14 @@ __pycache__/
 *$py.class
 venv/
 .env
+node_modules/
 
 # Project specific
 .karaoke_cache.json
 .audio_cache/
+.studio_cache/
+web/dist/
+.server-*.log
 
 # OS
 .DS_Store
