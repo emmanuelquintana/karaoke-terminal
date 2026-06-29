@@ -119,11 +119,7 @@ def api_error(
 def _not_found(_exc) -> Response:
     if request.path.startswith("/api/"):
         return api_error("Recurso no encontrado.", status=404)
-    ensure_frontend_build()
-    if not (FRONTEND_DIST_DIR / "index.html").exists():
-        return frontend_build_missing_response()
-    static_root = _frontend_root()
-    return _no_cache(send_from_directory(static_root, "index.html"))
+    return frontend_index_response()
 
 
 @app.errorhandler(409)
@@ -191,6 +187,32 @@ def frontend_build_missing_response() -> Response:
         status=503,
         mimetype="text/html",
     )
+
+
+def frontend_index_response() -> Response:
+    ensure_frontend_build()
+    if not (FRONTEND_DIST_DIR / "index.html").exists():
+        return frontend_build_missing_response()
+    index_path = _frontend_root() / "index.html"
+    html_text = index_path.read_text(encoding="utf-8")
+    html_text = html_text.replace(" crossorigin", "")
+    if "<style data-karaoke-critical>" not in html_text:
+        html_text = html_text.replace(
+            "</head>",
+            """  <style data-karaoke-critical>
+    html,body,#root{min-height:100%;background:#07070a;color:#f5f5f7;margin:0}
+    #bootFallback{min-height:100vh;display:grid;place-items:center;font-family:Inter,system-ui,sans-serif;font-weight:800;font-size:clamp(32px,6vw,68px)}
+  </style>
+</head>""",
+            1,
+        )
+    html_text = html_text.replace(
+        '<div id="root"></div>',
+        '<div id="root"><div id="bootFallback">Terminal Karaoke</div></div>',
+        1,
+    )
+    response = Response(html_text, mimetype="text/html")
+    return _no_cache(response)
 
 
 def _json_payload() -> dict:
@@ -2146,10 +2168,7 @@ def _no_cache(resp: Response) -> Response:
 
 @app.route("/")
 def index() -> Response:
-    ensure_frontend_build()
-    if not (FRONTEND_DIST_DIR / "index.html").exists():
-        return frontend_build_missing_response()
-    return _no_cache(send_from_directory(_frontend_root(), "index.html"))
+    return frontend_index_response()
 
 
 @app.route("/web/<path:filename>")
