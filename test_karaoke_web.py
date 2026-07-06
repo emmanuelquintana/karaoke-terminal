@@ -302,6 +302,47 @@ class StudioSubtitleTests(unittest.TestCase):
         self.assertLess(aligned[0]["end"], 53.5)
         self.assertGreater(aligned[1]["time"], 82.0)
 
+    def test_sync_song_lyrics_payload_applies_asr_alignment(self) -> None:
+        payload = {
+            "artist": "A",
+            "title": "B",
+            "mode": "estimado",
+            "duration": 30.0,
+            "lines": [
+                {"time": 6.0, "text": "hola mundo"},
+                {"time": 9.0, "text": "adios luna"},
+            ],
+        }
+        events = [
+            {
+                "start": 2.0,
+                "end": 3.0,
+                "text": "hola mundo",
+                "words": [
+                    {"start": 2.0, "end": 2.3, "word": "hola", "probability": 0.95},
+                    {"start": 2.35, "end": 2.8, "word": "mundo", "probability": 0.95},
+                ],
+            },
+            {
+                "start": 5.0,
+                "end": 6.0,
+                "text": "adios luna",
+                "words": [
+                    {"start": 5.0, "end": 5.4, "word": "adios", "probability": 0.95},
+                    {"start": 5.45, "end": 5.9, "word": "luna", "probability": 0.95},
+                ],
+            },
+        ]
+        with patch.object(karaoke_web, "asr_runtime_available", return_value=True), \
+                patch.object(engine, "download_audio_track", return_value="song.mp3"), \
+                patch.object(karaoke_web, "transcribe_video_audio_events", return_value=events):
+            result, status = karaoke_web._sync_song_lyrics_payload(payload)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["timelineSource"], "asr-local")
+        self.assertLess(result["lines"][0]["time"], 3.0)
+
 
 class RouteTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -329,6 +370,7 @@ class RouteTests(unittest.TestCase):
         spec = res.get_json()
         self.assertEqual(spec["openapi"], "3.0.3")
         self.assertIn("/songs", spec["paths"])
+        self.assertIn("/songs/lyrics-sync", spec["paths"])
         self.assertIn("/studio-sessions", spec["paths"])
 
     def test_song_requires_params(self) -> None:
@@ -369,6 +411,18 @@ class RouteTests(unittest.TestCase):
         payload = self.envelope(res)
         self.assertEqual(payload["code"], "HX_BO_404")
         self.assertIn("nope", payload["message"])
+
+    def test_song_lyrics_sync_returns_envelope(self) -> None:
+        payload = {"applied": False, "timelineSource": "asr-local"}
+        with patch.object(karaoke_web, "_sync_song_lyrics_payload", return_value=(payload, 200)):
+            res = self.client.post(
+                "/api/v1/songs/lyrics-sync",
+                json={"artist": "A", "title": "B", "lines": [{"time": 0.0, "text": "hola"}]},
+            )
+        self.assertEqual(res.status_code, 200)
+        body = self.envelope(res)
+        self.assertEqual(body["code"], "HX_BO_005")
+        self.assertFalse(body["data"]["applied"])
 
     def test_studio_prepare_requires_payload(self) -> None:
         res = self.client.post("/api/v1/studio-sessions", json={})

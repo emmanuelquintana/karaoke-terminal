@@ -15,9 +15,11 @@ import argparse
 import difflib
 import hashlib
 import html
+import importlib.util
 import json
 import math
 import re
+import shutil
 import subprocess
 import time
 import threading
@@ -49,6 +51,7 @@ MAX_STUDIO_SYNC_OFFSET = 180.0
 
 STUDIO_SESSIONS: dict[str, dict] = {}
 STUDIO_EXPORTS: dict[str, Path] = {}
+FRONTEND_BUILD_CHECKED = False
 
 app = Flask(__name__, static_folder=None)
 
@@ -117,8 +120,7 @@ def api_error(
 def _not_found(_exc) -> Response:
     if request.path.startswith("/api/"):
         return api_error("Recurso no encontrado.", status=404)
-    static_root = _frontend_root()
-    return _no_cache(send_from_directory(static_root, "index.html"))
+    return frontend_index_response()
 
 
 @app.errorhandler(409)
@@ -135,6 +137,85 @@ def _frontend_root() -> Path:
     return FRONTEND_DIST_DIR if (FRONTEND_DIST_DIR / "index.html").exists() else STATIC_DIR
 
 
+def _frontend_source_files() -> list[Path]:
+    sources = [BASE_DIR / "package.json", BASE_DIR / "package-lock.json", BASE_DIR / "vite.config.js", STATIC_DIR / "index.html", STATIC_DIR / "style.css"]
+    src_dir = STATIC_DIR / "src"
+    if src_dir.exists():
+        sources.extend(path for path in src_dir.rglob("*") if path.is_file())
+    return [path for path in sources if path.exists()]
+
+
+def _frontend_build_is_current() -> bool:
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if not index_path.exists():
+        return False
+    dist_mtime = index_path.stat().st_mtime
+    return all(path.stat().st_mtime <= dist_mtime for path in _frontend_source_files())
+
+
+def ensure_frontend_build() -> None:
+    global FRONTEND_BUILD_CHECKED
+    if FRONTEND_BUILD_CHECKED and (FRONTEND_DIST_DIR / "index.html").exists():
+        return
+    FRONTEND_BUILD_CHECKED = True
+    if _frontend_build_is_current():
+        return
+    if not (BASE_DIR / "package.json").exists():
+        return
+    npm = shutil.which("npm")
+    if not npm:
+        return
+    try:
+        if not (BASE_DIR / "node_modules").exists():
+            subprocess.run([npm, "install"], cwd=BASE_DIR, capture_output=True, text=True, timeout=180)
+        subprocess.run([npm, "run", "build"], cwd=BASE_DIR, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def frontend_build_missing_response() -> Response:
+    return Response(
+        """<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Frontend no compilado</title></head>
+<body style="font-family: system-ui, sans-serif; background:#08080b; color:#f5f5f7; display:grid; min-height:100vh; place-items:center; margin:0;">
+  <main style="max-width: 640px; padding: 32px; line-height:1.5;">
+    <h1>Frontend React no compilado</h1>
+    <p>Ejecuta <code>npm install</code> y <code>npm run build</code>, o usa <code>./serve_public.ps1</code> para compilar antes de abrir el túnel.</p>
+  </main>
+</body>
+</html>""",
+        status=503,
+        mimetype="text/html",
+    )
+
+
+def frontend_index_response() -> Response:
+    ensure_frontend_build()
+    if not (FRONTEND_DIST_DIR / "index.html").exists():
+        return frontend_build_missing_response()
+    index_path = _frontend_root() / "index.html"
+    html_text = index_path.read_text(encoding="utf-8")
+    html_text = html_text.replace(" crossorigin", "")
+    if "<style data-karaoke-critical>" not in html_text:
+        html_text = html_text.replace(
+            "</head>",
+            """  <style data-karaoke-critical>
+    html,body,#root{min-height:100%;background:#07070a;color:#f5f5f7;margin:0}
+    #bootFallback{min-height:100vh;display:grid;place-items:center;font-family:Inter,system-ui,sans-serif;font-weight:800;font-size:clamp(32px,6vw,68px)}
+  </style>
+</head>""",
+            1,
+        )
+    html_text = html_text.replace(
+        '<div id="root"></div>',
+        '<div id="root"><div id="bootFallback">Terminal Karaoke</div></div>',
+        1,
+    )
+    response = Response(html_text, mimetype="text/html")
+    return _no_cache(response)
+
+
 def _json_payload() -> dict:
     payload = request.get_json(silent=True)
     return payload if isinstance(payload, dict) else {}
@@ -149,6 +230,60 @@ def _song_payload(artist: str, title: str) -> tuple[dict, int]:
         return {"error": str(exc)}, 404
     except Exception as exc:  # pragma: no cover
         return {"error": f"Error no controlado({exc})"}, 500
+
+
+def _sync_song_lyrics_payload(payload: dict) -> tuple[dict, int]:
+    artist = (payload.get("artist") or "").strip()
+    title = (payload.get("title") or "").strip()
+    lines = payload.get("lines") if isinstance(payload.get("lines"), list) else []
+    mode = (payload.get("mode") or "").strip()
+    duration = _as_float(payload.get("duration"), 0.0)
+    if not artist or not title or not lines:
+        return {"error": "Faltan artista, canción o líneas para sincronizar."}, 400
+    if not asr_runtime_available():
+        return {"error": "ASR local no disponible. Instala `pip install -r requirements-asr.txt`."}, 503
+
+    try:
+        ensure_studio_cache_dir()
+        audio_path = Path(engine.download_audio_track(artist, title))
+        max_seconds = _bounded((duration or 240.0) + 8.0, 90.0, 420.0)
+        events = transcribe_video_audio_events(audio_path, max_seconds=max_seconds)
+    except engine.AudioPlaybackError as exc:
+        return {"error": str(exc)}, 503
+    except subprocess.TimeoutExpired:
+        return {"error": "La sincronización de karaoke tardó demasiado y se canceló."}, 504
+    except Exception as exc:  # pragma: no cover
+        return {"error": f"No pude sincronizar el karaoke: {exc}"}, 500
+
+    if not events:
+        return {"error": "No pude transcribir el audio local para sincronizar la letra."}, 503
+
+    aligned_lines, confidence = align_lyrics_to_timed_text(lines, events)
+    required_confidence = 0.52 if "sincronizado" in mode.casefold() else 0.38
+    if not aligned_lines or confidence < required_confidence:
+        return {
+            "applied": False,
+            "confidence": confidence,
+            "requiredConfidence": required_confidence,
+            "timelineSource": "asr-local",
+            "message": "No hubo coincidencia suficiente para reemplazar los tiempos actuales.",
+        }, 200
+
+    new_duration = duration
+    if aligned_lines:
+        new_duration = max(duration, _as_float(aligned_lines[-1].get("end"), aligned_lines[-1]["time"] + 4.0))
+    synced_mode = mode or "sincronizado"
+    if "audio" not in synced_mode.casefold():
+        synced_mode = f"{synced_mode} por audio".strip()
+    return {
+        "applied": True,
+        "lines": aligned_lines,
+        "mode": synced_mode,
+        "duration": round(new_duration, 3),
+        "timelineSource": "asr-local",
+        "timelineConfidence": confidence,
+        "firstCaptionAt": round(first_singable_line_time({"lines": aligned_lines}), 2),
+    }, 200
 
 
 def _prepare_studio_payload(payload: dict) -> tuple[dict, int]:
@@ -264,6 +399,30 @@ def _openapi_spec() -> dict:
                         {"name": "title", "in": "query", "required": True, "schema": {"type": "string"}},
                     ],
                     "responses": {"200": {"description": "Audio MP3", "content": {"audio/mpeg": {}}}},
+                }
+            },
+            "/songs/lyrics-sync": {
+                "post": {
+                    "summary": "Sincroniza la letra de karaoke contra el audio real",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["artist", "title", "lines"],
+                                    "properties": {
+                                        "artist": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "mode": {"type": "string"},
+                                        "duration": {"type": "number"},
+                                        "lines": {"type": "array", "items": {"type": "object"}},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Sincronización evaluada", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiEnvelope"}}}}},
                 }
             },
             "/covers": {
@@ -708,6 +867,10 @@ def estimated_lyric_correction(song: dict) -> float:
     lead_in = estimated_plain_lead_in(_as_float(song.get("duration"), 0.0), len(lines))
     first_line = first_singable_line_time(song)
     return round(max(0.0, lead_in - first_line), 2)
+
+
+def asr_runtime_available() -> bool:
+    return importlib.util.find_spec("faster_whisper") is not None or importlib.util.find_spec("whisper") is not None
 
 
 def _clean_caption_text(value: str) -> str:
@@ -1233,8 +1396,10 @@ def distribute_lyrics_over_segments(lyric_lines: list[dict], events: list[dict])
     return aligned, round(confidence, 3)
 
 
-def transcribe_video_audio_events(video_path: Path) -> list[dict]:
+def transcribe_video_audio_events(video_path: Path, max_seconds: float = 210.0) -> list[dict]:
     """ASR local opcional. Se usa si existe faster-whisper/openai-whisper instalado."""
+    if not asr_runtime_available():
+        return []
     sync_id = uuid.uuid4().hex[:10]
     wav_path = STUDIO_CACHE_DIR / f"asr-{sync_id}.wav"
     cmd = [
@@ -1250,7 +1415,7 @@ def transcribe_video_audio_events(video_path: Path) -> list[dict]:
         "-ar",
         "16000",
         "-t",
-        "210",
+        f"{_bounded(max_seconds, 15.0, 480.0):.1f}",
         str(wav_path),
     ]
     try:
@@ -2088,11 +2253,12 @@ def _no_cache(resp: Response) -> Response:
 
 @app.route("/")
 def index() -> Response:
-    return _no_cache(send_from_directory(_frontend_root(), "index.html"))
+    return frontend_index_response()
 
 
 @app.route("/web/<path:filename>")
 def static_files(filename: str) -> Response:
+    ensure_frontend_build()
     static_root = _frontend_root()
     if (static_root / filename).exists():
         return _no_cache(send_from_directory(static_root, filename))
@@ -2174,6 +2340,16 @@ def api_audio() -> Response:
         return api_error(f"No pude preparar el audio: {exc}", status=500)
     # conditional=True habilita peticiones Range para hacer seek en el <audio>.
     return send_file(path, mimetype="audio/mpeg", conditional=True)
+
+
+@app.route("/api/v1/songs/lyrics-sync", methods=["POST"])
+@app.route("/api/song/sync", methods=["POST"])
+def api_song_lyrics_sync() -> Response:
+    payload, status = _sync_song_lyrics_payload(_json_payload())
+    if status >= 400:
+        return api_error(payload.get("error", "No pude sincronizar la letra."), status=status)
+    message = "Letra sincronizada con audio." if payload.get("applied") else "Sincronización evaluada."
+    return api_success(payload, code=5, message=message)
 
 
 @app.route("/api/v1/studio-sessions", methods=["POST"])

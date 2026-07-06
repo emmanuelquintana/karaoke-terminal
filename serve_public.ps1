@@ -26,17 +26,33 @@ if (-not $cf) {
     exit 1
 }
 
+if (Test-Path "package.json") {
+    $npm = (Get-Command npm -ErrorAction SilentlyContinue).Source
+    if (-not $npm) {
+        Write-Error "No encontré npm. Instala Node.js para compilar el frontend React antes de abrir el túnel."
+        exit 1
+    }
+
+    if (-not (Test-Path "node_modules")) {
+        Write-Host "Instalando dependencias del frontend..." -ForegroundColor Cyan
+        & $npm install
+    }
+
+    Write-Host "Compilando frontend React..." -ForegroundColor Cyan
+    & $npm run build
+}
+
 Write-Host "Iniciando el servidor en http://127.0.0.1:$Port ..." -ForegroundColor Cyan
 $env:PYTHONIOENCODING = "utf-8"
 $app = Start-Process -FilePath "python" `
-    -ArgumentList "karaoke_web.py", "--no-open", "--port", "$Port" `
+    -ArgumentList "karaoke_web.py", "--no-open", "--host", "127.0.0.1", "--port", "$Port" `
     -PassThru -WindowStyle Minimized
 Start-Sleep -Seconds 2
 
 Write-Host "Abriendo tunel publico con Cloudflare (Ctrl+C para detener)..." -ForegroundColor Cyan
 Write-Host "Busca la URL https://<algo>.trycloudflare.com en la salida de abajo." -ForegroundColor Yellow
 try {
-    & $cf tunnel --url "http://localhost:$Port" --no-autoupdate
+    & $cf tunnel --url "http://127.0.0.1:$Port" --no-autoupdate
 }
 finally {
     if ($app -and -not $app.HasExited) {
