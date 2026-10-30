@@ -11,4 +11,5 @@ node_modules/
 reports/
 output/
 .playwright-cli/
+.playwright-mcp/
 web/dist/

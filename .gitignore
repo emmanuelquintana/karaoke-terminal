@@ -19,6 +19,7 @@ web/dist/
 .server-*.log
 output/playwright/
 .playwright-cli/
+.playwright-mcp/
 
 # OS
 .DS_Store
