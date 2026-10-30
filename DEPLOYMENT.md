@@ -42,6 +42,10 @@ procesar video con más memoria que un servicio básico. Revisa el costo en Rend
 antes de crear el servicio. Puedes usar el mismo Dockerfile en otro servidor con
 un volumen persistente montado en `/data`.
 
+Registra primero un método de pago en **Billing** de Render. Sin él, la API
+rechaza la creación con `Payment information is required to complete this request`.
+El plan gratuito no admite el disco persistente necesario para conservar los medios.
+
 Configura las variables que pide el Blueprint:
 
 | Variable del backend | Valor |
