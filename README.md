@@ -2,6 +2,9 @@
 
 **Terminal Karaoke** es un reproductor de letras sincronizadas minimalista, elegante y potente diseñado para ejecutarse directamente en tu consola. Transforma tu terminal en una experiencia de karaoke interactiva con animaciones fluidas, emojis dinámicos y soporte de audio opcional.
 
+**Despliegue web:** consulta [Vercel + Neon + backend Docker](DEPLOYMENT.md) para
+publicar la interfaz y conservar audio, estudio, sincronización y exportación MP4.
+
 ---
 
 ## ✨ Características Principales
@@ -103,7 +106,7 @@ winget install --id Cloudflare.cloudflared
 
 El script imprime una URL `https://<algo>.trycloudflare.com` que funciona desde cualquier lado **mientras tu PC esté encendida**. El servidor sigue escuchando solo en `localhost`; solo el túnel lo expone.
 
-> **Nota:** la URL del modo rápido cambia en cada ejecución. Para una URL fija necesitas una cuenta de Cloudflare + un túnel con nombre y tu propio dominio. Hospedarlo en la nube (Render/Railway/Vercel) corre la app, pero la descarga de audio fallará porque YouTube bloquea las IPs de datacenter; para eso usa la versión de solo letra.
+> **Nota:** la URL del modo rápido cambia en cada ejecución. Para una URL fija necesitas una cuenta de Cloudflare + un túnel con nombre y tu propio dominio. YouTube puede bloquear descargas desde IPs de datacenter. Puedes publicar la web en Vercel y mantener el backend detrás del túnel, o usar un servidor con acceso permitido a YouTube. Consulta [la guía de despliegue](DEPLOYMENT.md).
 
 ### Iniciar Karaoke Interactivo
 Simplemente ejecuta el script y sigue las instrucciones en pantalla:

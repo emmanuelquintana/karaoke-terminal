@@ -26,8 +26,9 @@ USER_AGENT = "terminal-karaoke/1.0 (+https://lrclib.net)"
 DEFAULT_EMOJIS = ["🎵", "🎶", "✨", "🌟", "🎤", "🪩", "💫", "🔥"]
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 LRC_TIMESTAMP_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]")
-CACHE_FILE = os.path.join(os.path.dirname(__file__), ".karaoke_cache.json")
-AUDIO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".audio_cache")
+DATA_DIR = Path(os.environ.get("KARAOKE_DATA_DIR") or Path(__file__).resolve().parent).resolve()
+CACHE_FILE = str(DATA_DIR / ".karaoke_cache.json")
+AUDIO_CACHE_DIR = str(DATA_DIR / ".audio_cache")
 ELLIPSIS = "…"
 ASCII_FIGLET_FONT = "standard"
 ASCII_REVEAL_PORTION = 0.4
@@ -335,6 +336,7 @@ def load_cache() -> dict[str, dict]:
 
 def save_cache(cache: dict[str, dict]) -> None:
     try:
+        Path(CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
         with open(CACHE_FILE, "w", encoding="utf-8") as handle:
             json.dump(cache, handle, ensure_ascii=False, indent=2)
     except OSError:

@@ -1,6 +1,8 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import karaoke_terminal as engine
@@ -102,6 +104,51 @@ class ResolveForWebTests(unittest.TestCase):
 
 
 class StudioSubtitleTests(unittest.TestCase):
+    def test_export_cleans_only_its_intermediates_on_success_and_failure(self) -> None:
+        for failure in (None, "overlay", "ffmpeg"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "video.mp4"
+                source.write_bytes(b"source")
+                unrelated = root / "segment-other-000.mp4"
+                unrelated.write_bytes(b"other export")
+                export_id = "a" * 12
+                session = {"videoPath": str(source), "video": {"duration": 4}, "song": {"lines": [{"time": 0, "text": "hola"}]}}
+
+                def render(*args, **kwargs):
+                    caption = root / f"caption-{export_id}-000.png"
+                    mask = root / f"caption-mask-{export_id}-000.png"
+                    caption.write_bytes(b"caption")
+                    mask.write_bytes(b"mask")
+                    if failure == "overlay":
+                        raise RuntimeError("overlay failed")
+                    return [(caption, mask, 0.0, 2.0)]
+
+                def encode(command, **kwargs):
+                    Path(command[-1]).write_bytes(b"encoded")
+                    if failure == "ffmpeg":
+                        raise RuntimeError("ffmpeg failed")
+
+                with patch.object(karaoke_web, "STUDIO_CACHE_DIR", root), \
+                        patch.object(karaoke_web, "_studio_session", return_value=session), \
+                        patch.object(karaoke_web, "_ffmpeg_exe", return_value="ffmpeg"), \
+                        patch.object(karaoke_web.uuid, "uuid4", return_value=SimpleNamespace(hex="a" * 32)), \
+                        patch.object(karaoke_web, "render_subtitle_overlay_images", side_effect=render), \
+                        patch.object(karaoke_web, "_run_export_command", side_effect=encode), \
+                        patch.object(karaoke_web.studio_store, "save_export") as save:
+                    if failure:
+                        with self.assertRaises(RuntimeError):
+                            karaoke_web.export_studio_clip("session", {"length": 2})
+                        save.assert_not_called()
+                    else:
+                        _, final = karaoke_web.export_studio_clip("session", {"length": 2})
+                        self.assertTrue(final.exists())
+                        save.assert_called_once()
+                expected = {source, unrelated}
+                if not failure:
+                    expected.add(root / f"tiktok-studio-{export_id}.mp4")
+                self.assertEqual(set(root.iterdir()), expected)
+
     def test_build_ass_subtitles_applies_clip_start_and_offset(self) -> None:
         ass = karaoke_web.build_ass_subtitles(
             [{"time": 10.0, "text": "hola"}, {"time": 12.0, "text": "adios"}],
@@ -309,6 +356,79 @@ class RouteTests(unittest.TestCase):
         karaoke_web.STUDIO_EXPORTS.clear()
         self.client = karaoke_web.app.test_client()
 
+    def test_invalid_text_fields_are_rejected_before_backend_work(self) -> None:
+        with patch.object(karaoke_web, "resolve_for_web") as lookup:
+            for name in ("video", "artist", "title"):
+                for value in (123, ["A"], {"value": "A"}):
+                    payload = {"video": "video", "artist": "A", "title": "B", name: value}
+                    self.assertEqual(self.client.post("/api/v1/studio-sessions", json=payload).status_code, 400)
+            lookup.assert_not_called()
+        for path in ("/api/studio/sync", "/api/studio/export"):
+            self.assertEqual(self.client.post(path, json={"sessionId": 123}).status_code, 400)
+
+    def test_invalid_subtitle_types_are_rejected_before_export(self) -> None:
+        with patch.object(karaoke_web, "export_studio_clip") as export:
+            for subtitle in ([], "wrong", {"font": []}, {"color": {}}):
+                res = self.client.post("/api/v1/studio-sessions/id/exports", json={"subtitle": subtitle})
+                self.assertEqual(res.status_code, 400)
+            export.assert_not_called()
+
+    def test_request_limit_returns_json_with_cors(self) -> None:
+        origin = "https://karaoke.vercel.app"
+        with patch.dict(karaoke_web.app.config, {"FRONTEND_ORIGINS": {origin}}), patch.object(karaoke_web, "resolve_for_web") as lookup:
+            res = self.client.post("/api/v1/studio-sessions", json={"video": "x" * 65536}, headers={"Origin": origin})
+            self.assertEqual(res.status_code, 413)
+            self.assertEqual(self.envelope(res)["code"], "HX_BO_413")
+            self.assertEqual(res.headers["Access-Control-Allow-Origin"], origin)
+            lookup.assert_not_called()
+
+    def test_internal_exception_details_stay_in_logs(self) -> None:
+        with patch.object(karaoke_web, "resolve_for_web", side_effect=RuntimeError("private-path-marker")), patch.object(karaoke_web.app.logger, "exception") as log:
+            res = self.client.get("/api/v1/songs?artist=A&title=B")
+            self.assertEqual(res.status_code, 500)
+            self.assertNotIn("private-path-marker", res.get_data(as_text=True))
+            log.assert_called_once()
+
+    def test_health_works_without_media_or_external_requests(self) -> None:
+        res = self.client.get("/api/v1/health")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.envelope(res)["data"], {"status": "ok"})
+
+    def test_cors_preflight_and_errors_for_exact_frontend_origins(self) -> None:
+        origin = "https://karaoke.vercel.app"
+        with patch.dict(karaoke_web.app.config, {"FRONTEND_ORIGINS": {origin}}):
+            res = self.client.options("/api/v1/studio-sessions", headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type",
+            })
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.headers["Access-Control-Allow-Origin"], origin)
+            self.assertIn("Content-Type", res.headers["Access-Control-Allow-Headers"])
+            res = self.client.get("/api/v1/songs", headers={"Origin": origin})
+            self.assertEqual(res.status_code, 400)
+            self.assertEqual(res.headers["Access-Control-Allow-Origin"], origin)
+            self.assertIn("Origin", res.headers["Vary"])
+            for untrusted in ["https://evil.vercel.app", origin + ".evil.com", "null"]:
+                res = self.client.get("/api/v1/health", headers={"Origin": untrusted})
+                self.assertNotIn("Access-Control-Allow-Origin", res.headers)
+
+    def test_media_range_and_exports_survive_empty_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "clip.mp4"
+            media.write_bytes(b"0123456789" * 100)
+            with patch.object(karaoke_web.studio_store, "load_session", return_value={"videoPath": str(media)}):
+                res = self.client.get("/api/v1/studio-sessions/id/video", headers={"Range": "bytes=100-199"})
+                self.assertEqual(res.status_code, 206)
+                self.assertEqual(res.headers["Content-Range"], "bytes 100-199/1000")
+                self.assertEqual(res.data, b"0123456789" * 10)
+                res.close()
+            with patch.object(karaoke_web.studio_store, "load_export", return_value=media):
+                res = self.client.get("/api/v1/studio-exports/id/file")
+                self.assertEqual(res.status_code, 200)
+                self.assertIn("attachment", res.headers["Content-Disposition"])
+                res.close()
+
     def envelope(self, response):
         payload = response.get_json()
         self.assertIsInstance(payload, dict)
@@ -320,8 +440,9 @@ class RouteTests(unittest.TestCase):
         return payload
 
     def test_index_and_static_served(self) -> None:
-        self.assertEqual(self.client.get("/").status_code, 200)
-        self.assertEqual(self.client.get("/web/app.js").status_code, 200)
+        for path in ("/", "/web/app.js"):
+            with self.client.get(path) as res:
+                self.assertEqual(res.status_code, 200)
 
     def test_openapi_served(self) -> None:
         res = self.client.get("/api/v1/docs/openapi.json")
@@ -353,6 +474,13 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.envelope(res)["code"], "HX_BO_400")
         res2 = self.client.get("/api/v1/covers?u=http://127.0.0.1/secret")
         self.assertEqual(res2.status_code, 400)
+        for host in ("evilapple.com", "evil-mzstatic.com"):
+            self.assertEqual(self.client.get(f"/api/v1/covers?u=https://{host}/x.jpg").status_code, 400)
+
+    def test_video_download_rejects_non_youtube_urls(self) -> None:
+        for url in ("http://127.0.0.1/secret", "https://youtube.com.evil.com/video", "https://evil.example/video"):
+            with self.assertRaisesRegex(engine.AudioPlaybackError, "URL HTTPS de YouTube"):
+                karaoke_web.resolve_studio_video(url)
 
     def test_cover_allows_itunes_host(self) -> None:
         with patch("urllib.request.urlopen") as fake:

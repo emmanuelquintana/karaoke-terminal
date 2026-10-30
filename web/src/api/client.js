@@ -1,4 +1,9 @@
-const API_BASE = "/api/v1";
+const API_ORIGIN = (import.meta.env?.VITE_API_ORIGIN || "").trim().replace(/\/+$/, "");
+const API_BASE = `${API_ORIGIN}/api/v1`;
+
+export function apiUrl(path) {
+  return path ? `${API_ORIGIN}${path}` : "";
+}
 
 async function readJson(response) {
   try {
@@ -9,8 +14,17 @@ async function readJson(response) {
 }
 
 export async function apiJson(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    throw new Error("No pude conectar con el servidor. Revisa tu conexión o inténtalo de nuevo.");
+  }
   const payload = await readJson(response);
+  if (payload === null) {
+    throw new Error("El servidor no devolvió JSON. Revisa la URL y la disponibilidad del backend.");
+  }
   if (!response.ok) {
     throw new Error(payload?.message || payload?.error || "No pude completar la solicitud.");
   }

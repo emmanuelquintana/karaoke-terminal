@@ -1,0 +1,14 @@
+.git/
+.vercel/
+.venv/
+venv/
+node_modules/
+.env
+.env.*
+.audio_cache/
+.studio_cache/
+.karaoke_cache.json
+reports/
+output/
+.playwright-cli/
+web/dist/

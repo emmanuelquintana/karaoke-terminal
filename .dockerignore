@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+node_modules
+web
+__pycache__
+*.pyc
+.audio_cache
+.studio_cache
+.karaoke_cache.json
+.vercel
+venv
+.venv
+test_*.py
+reports
+output

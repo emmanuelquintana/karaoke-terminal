@@ -3,7 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
+.venv/
 .env
+.env.*
+!.env.example
+!.env.server.example
+.vercel/
 node_modules/
 
 # Project specific
@@ -12,6 +17,8 @@ node_modules/
 .studio_cache/
 web/dist/
 .server-*.log
+output/playwright/
+.playwright-cli/
 
 # OS
 .DS_Store

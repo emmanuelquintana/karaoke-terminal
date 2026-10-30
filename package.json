@@ -2,7 +2,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "check": "vite build --mode check"
+    "check": "vite build --mode check",
+    "test": "node --test test_api_client.mjs test_vite_config.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

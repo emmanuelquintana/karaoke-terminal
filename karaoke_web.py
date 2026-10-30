@@ -17,6 +17,7 @@ import hashlib
 import html
 import json
 import math
+import os
 import re
 import subprocess
 import time
@@ -33,16 +34,17 @@ from typing import Optional
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
 import karaoke_terminal as engine
+import studio_store
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "web"
 FRONTEND_DIST_DIR = STATIC_DIR / "dist"
-STUDIO_CACHE_DIR = BASE_DIR / ".studio_cache"
+STUDIO_CACHE_DIR = engine.DATA_DIR / ".studio_cache"
 ITUNES_ENDPOINT = "https://itunes.apple.com/search"
 API_SERVICE = "HX"
 API_MODULE = "BO"
 DEFAULT_METADATA = {"page": 0, "size": 0, "elements": 0}
-ERROR_API_CODES = {400, 404, 409, 500}
+ERROR_API_CODES = {400, 404, 409, 413, 500}
 MAX_STUDIO_CLIP_SECONDS = 58.0
 MIN_STUDIO_SYNC_OFFSET = -60.0
 MAX_STUDIO_SYNC_OFFSET = 180.0
@@ -51,6 +53,25 @@ STUDIO_SESSIONS: dict[str, dict] = {}
 STUDIO_EXPORTS: dict[str, Path] = {}
 
 app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+app.config["FRONTEND_ORIGINS"] = {
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("FRONTEND_ORIGINS", "").split(",")
+    if origin.strip()
+}
+
+
+@app.after_request
+def _frontend_cors(response: Response) -> Response:
+    if request.path.startswith("/api/"):
+        response.vary.add("Origin")
+        origin = request.headers.get("Origin")
+        if origin in app.config["FRONTEND_ORIGINS"]:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range, X-Trace-Id"
+            response.headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Disposition"
+    return response
 
 
 @app.before_request
@@ -115,7 +136,7 @@ def api_error(
 
 @app.errorhandler(404)
 def _not_found(_exc) -> Response:
-    if request.path.startswith("/api/"):
+    if request.path.startswith("/api/") or not (_frontend_root() / "index.html").exists():
         return api_error("Recurso no encontrado.", status=404)
     static_root = _frontend_root()
     return _no_cache(send_from_directory(static_root, "index.html"))
@@ -128,7 +149,12 @@ def _conflict(exc) -> Response:
 
 @app.errorhandler(500)
 def _internal_error(exc) -> Response:
-    return api_error(f"Error no controlado({exc})", status=500)
+    return api_error("Error interno del servidor.", status=500)
+
+
+@app.errorhandler(413)
+def _request_too_large(_exc) -> Response:
+    return api_error("La solicitud supera el límite de 64 KiB.", status=413)
 
 
 def _frontend_root() -> Path:
@@ -140,6 +166,11 @@ def _json_payload() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _text_field(payload: dict, name: str) -> str:
+    value = payload.get(name)
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _song_payload(artist: str, title: str) -> tuple[dict, int]:
     if not artist or not title:
         return {"error": "Faltan 'artist' y 'title'."}, 400
@@ -147,14 +178,15 @@ def _song_payload(artist: str, title: str) -> tuple[dict, int]:
         return resolve_for_web(artist, title), 200
     except engine.LyricsLookupError as exc:
         return {"error": str(exc)}, 404
-    except Exception as exc:  # pragma: no cover
-        return {"error": f"Error no controlado({exc})"}, 500
+    except Exception:  # pragma: no cover
+        app.logger.exception("Error al resolver la canción")
+        return {"error": "No pude cargar la canción. Inténtalo de nuevo."}, 500
 
 
 def _prepare_studio_payload(payload: dict) -> tuple[dict, int]:
-    video_ref = (payload.get("video") or "").strip()
-    artist = (payload.get("artist") or "").strip()
-    title = (payload.get("title") or "").strip()
+    video_ref = _text_field(payload, "video")
+    artist = _text_field(payload, "artist")
+    title = _text_field(payload, "title")
     if not video_ref or not artist or not title:
         return {"error": "Faltan video, artista o canción."}, 400
 
@@ -165,16 +197,18 @@ def _prepare_studio_payload(payload: dict) -> tuple[dict, int]:
         return {"error": str(exc)}, 404
     except engine.AudioPlaybackError as exc:
         return {"error": str(exc)}, 503
-    except Exception as exc:  # pragma: no cover
-        return {"error": f"No pude preparar el estudio: {exc}"}, 500
+    except Exception:  # pragma: no cover
+        app.logger.exception("Error al preparar el estudio")
+        return {"error": "No pude preparar el estudio. Inténtalo de nuevo."}, 500
 
     session_id = uuid.uuid4().hex[:12]
-    STUDIO_SESSIONS[session_id] = {
+    session = {
         "videoPath": str(video_path),
         "video": video_meta,
         "song": song,
         "createdAt": time.time(),
     }
+    studio_store.save_session(session_id, session, STUDIO_SESSIONS)
     return {
         "sessionId": session_id,
         "videoUrl": f"/api/v1/studio-sessions/{session_id}/video",
@@ -196,13 +230,19 @@ def _sync_studio_payload(session_id: str) -> tuple[dict, int]:
         return {"error": str(exc)}, 503
     except subprocess.TimeoutExpired:
         return {"error": "La sincronización tardó demasiado y se canceló."}, 504
-    except Exception as exc:  # pragma: no cover
-        return {"error": f"No pude sincronizar el audio: {exc}"}, 500
+    except Exception:  # pragma: no cover
+        app.logger.exception("Error al sincronizar el audio")
+        return {"error": "No pude sincronizar el audio. Inténtalo de nuevo."}, 500
 
 
 def _export_studio_payload(session_id: str, payload: dict) -> tuple[dict, int]:
     if not session_id:
         return {"error": "Falta la sesión del estudio."}, 400
+    subtitle = payload.get("subtitle", {})
+    if not isinstance(subtitle, dict):
+        return {"error": "Los subtítulos deben ser un objeto JSON."}, 400
+    if any(name in subtitle and not isinstance(subtitle[name], str) for name in ("font", "position", "style", "color")):
+        return {"error": "Fuente, posición, estilo y color deben ser texto."}, 400
     try:
         export_id, out_path = export_studio_clip(session_id, payload)
     except (KeyError, FileNotFoundError) as exc:
@@ -211,8 +251,9 @@ def _export_studio_payload(session_id: str, payload: dict) -> tuple[dict, int]:
         return {"error": str(exc)}, 503
     except subprocess.TimeoutExpired:
         return {"error": "La exportación tardó demasiado y se canceló."}, 504
-    except Exception as exc:  # pragma: no cover
-        return {"error": f"No pude exportar el clip: {exc}"}, 500
+    except Exception:  # pragma: no cover
+        app.logger.exception("Error al exportar el clip")
+        return {"error": "No pude exportar el clip. Inténtalo de nuevo."}, 500
     return {
         "exportId": export_id,
         "downloadUrl": f"/api/v1/studio-exports/{export_id}/file",
@@ -499,6 +540,13 @@ def _convert_video_to_mp4(source: Path, target: Path) -> None:
 
 def resolve_studio_video(video_ref: str) -> tuple[Path, dict]:
     """Busca/descarga un video y devuelve el archivo local MP4 con metadatos."""
+    if _looks_like_url(video_ref):
+        url = urllib.parse.urlparse(video_ref.strip())
+        host = (url.hostname or "").lower()
+        if url.scheme != "https" or url.username or url.password or not (
+            host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+        ):
+            raise engine.AudioPlaybackError("Usa una URL HTTPS de YouTube o busca el video por nombre.")
     if engine.yt_dlp is None:
         raise engine.AudioPlaybackError(
             "Falta yt-dlp para buscar y descargar videos. Instala `yt-dlp`."
@@ -1403,11 +1451,12 @@ def auto_sync_studio_audio(session_id: str) -> dict:
             result["lyricMode"] = song["mode"]
 
     result["firstCaptionAt"] = round(first_singable_line_time(song) + result["offset"], 2)
+    studio_store.save_session(session_id, session, STUDIO_SESSIONS)
     return result
 
 
 def _studio_session(session_id: str) -> dict:
-    session = STUDIO_SESSIONS.get(session_id)
+    session = studio_store.load_session(session_id, STUDIO_SESSIONS)
     if not session:
         raise KeyError("La sesión de estudio expiró. Prepara el video otra vez.")
     video_path = Path(session["videoPath"])
@@ -1499,6 +1548,11 @@ def subtitle_events_for_clip(lines: list[dict], *, start: float, length: float, 
 
 
 def _font_candidates(font: str) -> list[Path]:
+    if os.name != "nt":
+        fonts_dir = Path("/usr/share/fonts/truetype")
+        serif = fonts_dir / "dejavu/DejaVuSerif-Bold.ttf"
+        sans = fonts_dir / "dejavu/DejaVuSans-Bold.ttf"
+        return [serif if font == "Playfair" else sans]
     fonts_dir = Path("C:/Windows/Fonts")
     if font == "Playfair":
         return [fonts_dir / "georgiab.ttf", fonts_dir / "timesbd.ttf", fonts_dir / "arialbd.ttf"]
@@ -1917,24 +1971,6 @@ def export_studio_clip(session_id: str, options: dict) -> tuple[str, Path]:
     export_id = uuid.uuid4().hex[:12]
     out_path = STUDIO_CACHE_DIR / f"tiktok-studio-{export_id}.mp4"
     subtitle_events = subtitle_events_for_clip(lines, start=start, length=length, offset=offset)
-    overlays = render_subtitle_overlay_images(
-        subtitle_events,
-        export_id=export_id,
-        width=width,
-        height=height,
-        layout=layout,
-        font=font,
-        size=size,
-        position=position,
-        color=color,
-        style=style,
-        preview=preview,
-    )
-
-    overlay_by_window = {
-        (round(event_start, 3), round(event_end, 3)): (overlay_path, mask_path)
-        for overlay_path, mask_path, event_start, event_end in overlays
-    }
     segments = timeline_segments_for_export(subtitle_events, length)
     segment_paths: list[Path] = []
     base_filter = (
@@ -1944,6 +1980,23 @@ def export_studio_clip(session_id: str, options: dict) -> tuple[str, Path]:
     ffmpeg = _ffmpeg_exe()
 
     try:
+        overlays = render_subtitle_overlay_images(
+            subtitle_events,
+            export_id=export_id,
+            width=width,
+            height=height,
+            layout=layout,
+            font=font,
+            size=size,
+            position=position,
+            color=color,
+            style=style,
+            preview=preview,
+        )
+        overlay_by_window = {
+            (round(event_start, 3), round(event_end, 3)): (overlay_path, mask_path)
+            for overlay_path, mask_path, event_start, event_end in overlays
+        }
         for index, segment in enumerate(segments):
             segment_start = _as_float(segment["start"], 0.0)
             segment_end = _as_float(segment["end"], segment_start)
@@ -2071,9 +2124,19 @@ def export_studio_clip(session_id: str, options: dict) -> tuple[str, Path]:
         if out_path.exists():
             out_path.unlink(missing_ok=True)
         raise
+    finally:
+        for pattern in (
+            f"caption-{export_id}-*.png", f"caption-mask-{export_id}-*.png",
+            f"segment-{export_id}-*.mp4", f"concat-{export_id}.txt", f"video-only-{export_id}.mp4",
+        ):
+            for temporary in STUDIO_CACHE_DIR.glob(pattern):
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    app.logger.warning("No pude limpiar el archivo temporal %s", temporary, exc_info=True)
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise engine.AudioPlaybackError("FFmpeg terminó, pero no generó el MP4 final.")
-    STUDIO_EXPORTS[export_id] = out_path
+    studio_store.save_export(export_id, out_path, STUDIO_EXPORTS)
     return export_id, out_path
 
 
@@ -2088,6 +2151,8 @@ def _no_cache(resp: Response) -> Response:
 
 @app.route("/")
 def index() -> Response:
+    if not (_frontend_root() / "index.html").exists():
+        return api_health()
     return _no_cache(send_from_directory(_frontend_root(), "index.html"))
 
 
@@ -2102,6 +2167,11 @@ def static_files(filename: str) -> Response:
 @app.route("/api/v1/docs/openapi.json")
 def api_v1_openapi() -> Response:
     return jsonify(_openapi_spec())
+
+
+@app.route("/api/v1/health")
+def api_health() -> Response:
+    return api_success({"status": "ok"})
 
 
 @app.route("/api/v1/docs")
@@ -2144,7 +2214,7 @@ def api_cover() -> Response:
     url = (request.args.get("u") or "").strip()
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or ""
-    allowed = host.endswith("mzstatic.com") or host.endswith("apple.com")
+    allowed = any(host == domain or host.endswith(f".{domain}") for domain in ("mzstatic.com", "apple.com"))
     if parsed.scheme != "https" or not allowed:
         return api_error("URL de carátula no permitida.", status=400)
     req = urllib.request.Request(url, headers={"User-Agent": engine.USER_AGENT})
@@ -2170,8 +2240,9 @@ def api_audio() -> Response:
         path = engine.download_audio_track(artist, title)
     except engine.AudioPlaybackError as exc:
         return api_error(str(exc), status=503)
-    except Exception as exc:  # pragma: no cover
-        return api_error(f"No pude preparar el audio: {exc}", status=500)
+    except Exception:  # pragma: no cover
+        app.logger.exception("Error al preparar el audio")
+        return api_error("No pude preparar el audio. Inténtalo de nuevo.", status=500)
     # conditional=True habilita peticiones Range para hacer seek en el <audio>.
     return send_file(path, mimetype="audio/mpeg", conditional=True)
 
@@ -2199,7 +2270,7 @@ def api_studio_video(session_id: str) -> Response:
 @app.route("/api/studio/sync", methods=["POST"])
 def api_studio_sync(session_id: str = "") -> Response:
     if not session_id:
-        session_id = (_json_payload().get("sessionId") or "").strip()
+        session_id = _text_field(_json_payload(), "sessionId")
     payload, status = _sync_studio_payload(session_id)
     if status >= 400:
         return api_error(payload.get("error", "No pude sincronizar el audio."), status=status)
@@ -2211,7 +2282,7 @@ def api_studio_sync(session_id: str = "") -> Response:
 def api_studio_export(session_id: str = "") -> Response:
     payload = _json_payload()
     if not session_id:
-        session_id = (payload.get("sessionId") or "").strip()
+        session_id = _text_field(payload, "sessionId")
     result, status = _export_studio_payload(session_id, payload)
     if status >= 400:
         return api_error(result.get("error", "No pude exportar el clip."), status=status)
@@ -2221,7 +2292,7 @@ def api_studio_export(session_id: str = "") -> Response:
 @app.route("/api/v1/studio-exports/<export_id>/file")
 @app.route("/api/studio/download/<export_id>")
 def api_studio_download(export_id: str) -> Response:
-    path = STUDIO_EXPORTS.get(export_id)
+    path = studio_store.load_export(export_id, STUDIO_EXPORTS)
     if not path or not path.exists():
         return api_error("No encontré ese export. Vuelve a exportarlo.", status=404)
     return send_file(path, mimetype="video/mp4", as_attachment=True, download_name=path.name)

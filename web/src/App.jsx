@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { coverProxyUrl, createStudioSession, exportStudioSession, loadSong, songAudioUrl, syncStudioSession } from "./api/client.js";
+import { apiUrl, coverProxyUrl, createStudioSession, exportStudioSession, loadSong, songAudioUrl, syncStudioSession } from "./api/client.js";
 import { DEFAULT_PALETTE, INITIAL_STUDIO, LYRIC_FONTS, clamp, formatTime } from "./constants.js";
 import { SearchBar } from "./components/molecules/SearchBar.jsx";
 import { KaraokePlayer } from "./components/organisms/KaraokePlayer.jsx";
@@ -377,7 +377,7 @@ export function App() {
       } else {
         hasAudioRef.current = false;
         setHasAudio(false);
-        setAudioNote("Audio no disponible (instala yt-dlp e imageio-ffmpeg). La letra avanza con el reloj.");
+        setAudioNote("Audio no disponible. La letra avanza con el reloj.");
       }
 
       setKaraokeReady(true);
@@ -472,7 +472,7 @@ export function App() {
       const maxClipSeconds = Number(data.maxClipSeconds || 58);
       const clipLength = Math.min(maxClipSeconds, Math.max(5, Math.floor(nextDuration || maxClipSeconds)));
 
-      setStudioVideoSrc(data.videoUrl || "");
+      setStudioVideoSrc(apiUrl(data.videoUrl));
       setStudioVideoTitle(data.video?.title || "Video preparado");
       setStudioCurrentTime(0);
       setStudio(normalizeStudio({
@@ -647,7 +647,7 @@ export function App() {
           preview: studioPreviewMetrics(),
         },
       });
-      setDownloadUrl(data.downloadUrl || "");
+      setDownloadUrl(apiUrl(data.downloadUrl));
       setStudioStatus("Export listo");
       showToast("MP4 listo para descargar.");
     } catch (err) {
