@@ -2,15 +2,13 @@ services:
   - type: web
     name: karaoke-api
     runtime: docker
-    plan: standard
+    plan: free
     numInstances: 1
     healthCheckPath: /api/v1/health
-    disk:
-      name: karaoke-media
-      mountPath: /data
-      sizeGB: 10
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: FRONTEND_ORIGINS
+        sync: false
+      - key: BLOB_READ_WRITE_TOKEN
         sync: false

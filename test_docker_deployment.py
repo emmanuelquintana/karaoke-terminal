@@ -94,6 +94,7 @@ class DockerDeploymentTests(unittest.TestCase):
 
     def start_api(self, port=""):
         self.docker("run", "--detach", "--rm", "--name", self.api, "--network", self.prefix,
+                    "--memory", "512m", "--memory-swap", "512m", "--cpus", "0.1",
                     "--publish", f"127.0.0.1:{port}:8000", "--mount", self.data, "--mount", self.certs + ",readonly",
                     "--env", f"DATABASE_URL={self.database_url}", "--env", f"FRONTEND_ORIGINS={self.origin}",
                     "--env", "GUNICORN_CMD_ARGS=--config /data/audit_gunicorn.py", self.image)
@@ -113,8 +114,11 @@ class DockerDeploymentTests(unittest.TestCase):
         if body is not None:
             request_headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self.base + path, data=body, headers=request_headers, method=method)
-        with urllib.request.urlopen(req, timeout=180) as response:
-            return response.status, response.headers, response.read()
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                return response.status, response.headers, response.read()
+        except urllib.error.HTTPError as error:
+            self.fail(f"HTTP {error.code}: {error.read().decode('utf8', errors='replace')}")
 
     def test_prepare_sync_export_and_recover_after_container_replacement(self):
         status, headers, _ = self.request("/api/v1/studio-sessions", method="OPTIONS", headers={

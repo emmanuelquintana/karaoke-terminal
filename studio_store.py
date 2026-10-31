@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+_MEDIA_BLOBS: dict[str, str] = {}
+
 
 def _connect():
     import psycopg
@@ -21,6 +23,10 @@ def init_database() -> None:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS karaoke_studio_exports "
             "(id TEXT PRIMARY KEY, path TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS karaoke_media_blobs "
+            "(key TEXT PRIMARY KEY, blob_url TEXT NOT NULL)"
         )
 
 
@@ -68,6 +74,28 @@ def load_export(export_id: str, local: dict):
             "SELECT path FROM karaoke_studio_exports WHERE id = %s", (export_id,)
         ).fetchone()
     return Path(row[0]) if row else None
+
+
+def get_blob_url(key: str) -> str | None:
+    if not os.environ.get("DATABASE_URL"):
+        return _MEDIA_BLOBS.get(key)
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT blob_url FROM karaoke_media_blobs WHERE key = %s", (key,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_blob_url(key: str, url: str) -> None:
+    if not os.environ.get("DATABASE_URL"):
+        _MEDIA_BLOBS[key] = url
+        return
+    with _connect() as connection:
+        connection.execute(
+            "INSERT INTO karaoke_media_blobs (key, blob_url) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET blob_url = EXCLUDED.blob_url",
+            (key, url),
+        )
 
 
 if __name__ == "__main__":

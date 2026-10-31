@@ -15,7 +15,7 @@ COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
 COPY requirements.txt requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt 'yt-dlp[default]'
-COPY karaoke_terminal.py karaoke_web.py studio_store.py ./
+COPY karaoke_terminal.py karaoke_web.py studio_store.py media_store.py ./
 RUN useradd --create-home karaoke && mkdir /data && chown karaoke:karaoke /data
 # psycopg-binary bundles OpenSSL, which may not locate Debian's CA bundle automatically.
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt

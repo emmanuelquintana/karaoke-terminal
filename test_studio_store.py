@@ -85,7 +85,7 @@ class StudioStoreTests(unittest.TestCase):
         with patch.object(studio_store, "_connect") as connect:
             studio_store.init_database()
             connection = connect.return_value.__enter__.return_value
-            self.assertEqual(connection.execute.call_count, 2)
+            self.assertEqual(connection.execute.call_count, 3)
             for call in connection.execute.call_args_list:
                 self.assertIn("CREATE TABLE IF NOT EXISTS", call.args[0])
             connect.return_value.__exit__.assert_called_once_with(None, None, None)

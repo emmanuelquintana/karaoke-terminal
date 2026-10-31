@@ -28,12 +28,14 @@ import urllib.request
 import uuid
 import webbrowser
 from array import array
+from functools import wraps
 from pathlib import Path
 from typing import Optional
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
 import karaoke_terminal as engine
+import media_store
 import studio_store
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -51,6 +53,47 @@ MAX_STUDIO_SYNC_OFFSET = 180.0
 
 STUDIO_SESSIONS: dict[str, dict] = {}
 STUDIO_EXPORTS: dict[str, Path] = {}
+_STUDIO_JOB = threading.Lock()
+
+
+def _one_studio_job(function):
+    @wraps(function)
+    def run(*args, **kwargs):
+        if not _STUDIO_JOB.acquire(blocking=False):
+            return api_error("El estudio está procesando otro trabajo. Inténtalo al terminar.", status=503)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _STUDIO_JOB.release()
+    return run
+
+
+def _audio_blob_key(artist: str, title: str) -> str:
+    return "audio/" + Path(engine.audio_cache_path(artist, title)).name
+
+
+def _video_blob_key(video_path: Path) -> str:
+    return "video/" + video_path.name
+
+
+def _export_blob_key(export_id: str) -> str:
+    return "export/" + export_id + ".mp4"
+
+
+def _ensure_audio_local(artist: str, title: str) -> Path:
+    """Return a local audio path, restoring from Blob if cache is missing."""
+    key = _audio_blob_key(artist, title)
+    local = Path(engine.audio_cache_path(artist, title))
+    if not local.exists():
+        blob_url = studio_store.get_blob_url(key)
+        if blob_url:
+            media_store.restore_file(blob_url, local)
+    path = Path(engine.download_audio_track(artist, title))
+    if studio_store.get_blob_url(key) is None:
+        url = media_store.put_file(key, path, "audio/mpeg")
+        if url:
+            studio_store.set_blob_url(key, url)
+    return path
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
@@ -195,7 +238,7 @@ def _prepare_studio_payload(payload: dict) -> tuple[dict, int]:
         video_path, video_meta = resolve_studio_video(video_ref)
     except engine.LyricsLookupError as exc:
         return {"error": str(exc)}, 404
-    except engine.AudioPlaybackError as exc:
+    except (engine.AudioPlaybackError, media_store.BlobUploadError) as exc:
         return {"error": str(exc)}, 503
     except Exception:  # pragma: no cover
         app.logger.exception("Error al preparar el estudio")
@@ -208,6 +251,22 @@ def _prepare_studio_payload(payload: dict) -> tuple[dict, int]:
         "song": song,
         "createdAt": time.time(),
     }
+    video_key = _video_blob_key(video_path)
+    if studio_store.get_blob_url(video_key) is None:
+        try:
+            video_url = media_store.put_file(video_key, video_path, "video/mp4")
+            if video_url:
+                studio_store.set_blob_url(video_key, video_url)
+        except media_store.BlobUploadError as exc:
+            return {"error": str(exc)}, 503
+    meta_path = video_path.with_suffix(".json")
+    meta_key = _video_blob_key(meta_path)
+    if media_store.enabled() and studio_store.get_blob_url(meta_key) is None:
+        try:
+            meta_path.write_text(json.dumps(video_meta, ensure_ascii=False), encoding="utf8")
+            studio_store.set_blob_url(meta_key, media_store.put_file(meta_key, meta_path, "application/json"))
+        except media_store.BlobUploadError as exc:
+            return {"error": str(exc)}, 503
     studio_store.save_session(session_id, session, STUDIO_SESSIONS)
     return {
         "sessionId": session_id,
@@ -226,7 +285,7 @@ def _sync_studio_payload(session_id: str) -> tuple[dict, int]:
         return auto_sync_studio_audio(session_id), 200
     except (KeyError, FileNotFoundError) as exc:
         return {"error": str(exc)}, 404
-    except engine.AudioPlaybackError as exc:
+    except (engine.AudioPlaybackError, media_store.BlobUploadError) as exc:
         return {"error": str(exc)}, 503
     except subprocess.TimeoutExpired:
         return {"error": "La sincronización tardó demasiado y se canceló."}, 504
@@ -248,6 +307,8 @@ def _export_studio_payload(session_id: str, payload: dict) -> tuple[dict, int]:
     except (KeyError, FileNotFoundError) as exc:
         return {"error": str(exc)}, 404
     except engine.AudioPlaybackError as exc:
+        return {"error": str(exc)}, 503
+    except media_store.BlobUploadError as exc:
         return {"error": str(exc)}, 503
     except subprocess.TimeoutExpired:
         return {"error": "La exportación tardó demasiado y se canceló."}, 504
@@ -521,10 +582,14 @@ def _convert_video_to_mp4(source: Path, target: Path) -> None:
     cmd = [
         _ffmpeg_exe(),
         "-y",
+        "-threads",
+        "1",
         "-i",
         str(source),
         "-c:v",
         "libx264",
+        "-threads",
+        "1",
         "-c:a",
         "aac",
         "-movflags",
@@ -556,6 +621,12 @@ def resolve_studio_video(video_ref: str) -> tuple[Path, dict]:
     key = _studio_key(video_ref)
     target_mp4 = STUDIO_CACHE_DIR / f"video-{key}.mp4"
     meta_path = STUDIO_CACHE_DIR / f"video-{key}.json"
+    if media_store.enabled():
+        for cached in (target_mp4, meta_path):
+            if not cached.exists():
+                blob_url = studio_store.get_blob_url(_video_blob_key(cached))
+                if blob_url:
+                    media_store.restore_file(blob_url, cached)
     if target_mp4.exists() and meta_path.exists():
         try:
             return target_mp4, json.loads(meta_path.read_text(encoding="utf-8"))
@@ -1390,7 +1461,7 @@ def auto_sync_studio_audio(session_id: str) -> dict:
     if not artist or not title:
         raise engine.AudioPlaybackError("La sesión no tiene artista y canción para sincronizar.")
 
-    reference_audio = Path(engine.download_audio_track(artist, title))
+    reference_audio = _ensure_audio_local(artist, title)
     video_path = Path(session["videoPath"])
     sync_id = uuid.uuid4().hex[:10]
     ref_pcm = STUDIO_CACHE_DIR / f"sync-ref-{sync_id}.pcm"
@@ -1461,6 +1532,9 @@ def _studio_session(session_id: str) -> dict:
         raise KeyError("La sesión de estudio expiró. Prepara el video otra vez.")
     video_path = Path(session["videoPath"])
     if not video_path.exists():
+        blob_url = studio_store.get_blob_url(_video_blob_key(video_path))
+        if blob_url and media_store.restore_file(blob_url, video_path):
+            return session
         raise FileNotFoundError("El video de la sesión ya no está en caché.")
     return session
 
@@ -2024,6 +2098,8 @@ def export_studio_clip(session_id: str, options: dict) -> tuple[str, Path]:
                 "2",
                 "-filter_threads",
                 "1",
+                "-filter_complex_threads",
+                "1",
                 "-ss",
                 f"{start + segment_start:.3f}",
                 "-t",
@@ -2058,6 +2134,8 @@ def export_studio_clip(session_id: str, options: dict) -> tuple[str, Path]:
                 "-an",
                 "-c:v",
                 "libx264",
+                "-threads",
+                "1",
                 "-preset",
                 "veryfast",
                 "-crf",
@@ -2136,6 +2214,10 @@ def export_studio_clip(session_id: str, options: dict) -> tuple[str, Path]:
                     app.logger.warning("No pude limpiar el archivo temporal %s", temporary, exc_info=True)
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise engine.AudioPlaybackError("FFmpeg terminó, pero no generó el MP4 final.")
+    export_key = _export_blob_key(export_id)
+    export_url = media_store.put_file(export_key, out_path, "video/mp4")
+    if export_url:
+        studio_store.set_blob_url(export_key, export_url)
     studio_store.save_export(export_id, out_path, STUDIO_EXPORTS)
     return export_id, out_path
 
@@ -2237,8 +2319,8 @@ def api_audio() -> Response:
     if not artist or not title:
         return api_error("Faltan 'artist' y 'title'.", status=400)
     try:
-        path = engine.download_audio_track(artist, title)
-    except engine.AudioPlaybackError as exc:
+        path = _ensure_audio_local(artist, title)
+    except (engine.AudioPlaybackError, media_store.BlobUploadError) as exc:
         return api_error(str(exc), status=503)
     except Exception:  # pragma: no cover
         app.logger.exception("Error al preparar el audio")
@@ -2249,6 +2331,7 @@ def api_audio() -> Response:
 
 @app.route("/api/v1/studio-sessions", methods=["POST"])
 @app.route("/api/studio/prepare", methods=["POST"])
+@_one_studio_job
 def api_studio_prepare() -> Response:
     payload, status = _prepare_studio_payload(_json_payload())
     if status >= 400:
@@ -2268,6 +2351,7 @@ def api_studio_video(session_id: str) -> Response:
 
 @app.route("/api/v1/studio-sessions/<session_id>/sync", methods=["POST"])
 @app.route("/api/studio/sync", methods=["POST"])
+@_one_studio_job
 def api_studio_sync(session_id: str = "") -> Response:
     if not session_id:
         session_id = _text_field(_json_payload(), "sessionId")
@@ -2279,6 +2363,7 @@ def api_studio_sync(session_id: str = "") -> Response:
 
 @app.route("/api/v1/studio-sessions/<session_id>/exports", methods=["POST"])
 @app.route("/api/studio/export", methods=["POST"])
+@_one_studio_job
 def api_studio_export(session_id: str = "") -> Response:
     payload = _json_payload()
     if not session_id:
@@ -2293,6 +2378,10 @@ def api_studio_export(session_id: str = "") -> Response:
 @app.route("/api/studio/download/<export_id>")
 def api_studio_download(export_id: str) -> Response:
     path = studio_store.load_export(export_id, STUDIO_EXPORTS)
+    if path and not path.exists():
+        blob_url = studio_store.get_blob_url(_export_blob_key(export_id))
+        if blob_url:
+            media_store.restore_file(blob_url, path)
     if not path or not path.exists():
         return api_error("No encontré ese export. Vuelve a exportarlo.", status=404)
     return send_file(path, mimetype="video/mp4", as_attachment=True, download_name=path.name)
